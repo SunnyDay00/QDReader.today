@@ -7,7 +7,6 @@ import today.qdreader.auto.accessibility.AccessibilityBridge
 import today.qdreader.auto.accessibility.UiTreeSnapshot
 import today.qdreader.auto.accessibility.clickPointFor
 import today.qdreader.auto.accessibility.findNode
-import today.qdreader.auto.accessibility.hasAllTexts
 import today.qdreader.auto.accessibility.hasNode
 import today.qdreader.auto.core.AppConstants
 import today.qdreader.auto.logs.AppLogStore
@@ -106,10 +105,7 @@ class QidianPartialCheckInFlow(
         val welfareCenter = tapWelfareCenterWithRetry(myPage, bridge, executor)
             ?: return FlowExecutionResult(false, "连续点击“福利中心”$MAX_CLICK_ATTEMPTS 次后仍未进入福利中心界面")
 
-        val markerCount = WELFARE_CENTER_MARKERS.count { marker ->
-            welfareCenter.ocr.hasText(marker)
-        }
-        AppLogStore.add("步骤 5：OCR 已确认福利中心，命中 $markerCount 个验证文本")
+        AppLogStore.add("步骤 5：OCR 已确认福利中心，命中：${welfareCenter.ocr.welfareCenterMarkerSummary()}")
 
         AppLogStore.add("步骤 6：上滑福利中心页面，仅执行一次")
         executor.execute(welfareCenter.upSwipeAction()).getOrThrow()
@@ -228,9 +224,7 @@ class QidianPartialCheckInFlow(
             AppLogStore.add("点击“福利中心”（$attempt/$MAX_CLICK_ATTEMPTS）")
             executor.execute(AutomationAction.TapPoint(activeMyPage.clickPointFor(welfareNode))).getOrThrow()
 
-            val welfareCenter = waitForOcr(bridge, "福利中心", timeoutMillis = WELFARE_VERIFY_TIMEOUT_MILLIS) { ocr ->
-                ocr.hasWelfareCenterMarkers()
-            }
+            val welfareCenter = waitForWelfareCenter(bridge, timeoutMillis = WELFARE_VERIFY_TIMEOUT_MILLIS)
             if (welfareCenter != null) {
                 return welfareCenter
             }
@@ -496,6 +490,31 @@ class QidianPartialCheckInFlow(
         return null
     }
 
+    private suspend fun waitForWelfareCenter(
+        bridge: AccessibilityBridge,
+        timeoutMillis: Long
+    ): OcrScreen? {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        var lastPreview = ""
+        while (System.currentTimeMillis() < deadline) {
+            val screen = captureOcrScreen(bridge).getOrNull()
+            if (screen != null) {
+                if (screen.ocr.hasWelfareCenterMarkers()) {
+                    AppLogStore.add(
+                        "OCR 已识别：福利中心，命中：${screen.ocr.welfareCenterMarkerSummary()}，耗时 ${screen.ocr.elapsedMillis} ms"
+                    )
+                    return screen
+                }
+                lastPreview = screen.ocr.logPreview()
+            }
+            delay(700)
+        }
+        if (lastPreview.isNotBlank()) {
+            AppLogStore.add("福利中心 OCR 未满足验证条件，最近预览：$lastPreview")
+        }
+        return null
+    }
+
     private suspend fun captureOcrScreen(bridge: AccessibilityBridge): Result<OcrScreen> {
         var bitmap: Bitmap? = null
         return runCatching {
@@ -552,11 +571,42 @@ class QidianPartialCheckInFlow(
     }
 
     private fun UiTreeSnapshot.hasWelfareCenterMarkers(): Boolean {
-        return hasAllTexts(WELFARE_CENTER_MARKERS)
+        val matchedGroups = WELFARE_CENTER_MARKER_GROUPS.mapNotNull { (groupName, aliases) ->
+            if (aliases.any { alias -> hasNode(alias) }) groupName else null
+        }
+        val strongGroupCount = matchedGroups.count { group -> group != WELFARE_CENTER_TITLE_MARKER }
+        val hasTitle = matchedGroups.contains(WELFARE_CENTER_TITLE_MARKER)
+        return strongGroupCount >= 2 || (hasTitle && strongGroupCount >= 1)
     }
 
     private fun OcrResult.hasWelfareCenterMarkers(): Boolean {
-        return WELFARE_CENTER_MARKERS.all { marker -> hasText(marker) }
+        val matchedGroups = matchedWelfareCenterMarkerGroups()
+        val strongGroupCount = matchedGroups.count { group -> group != WELFARE_CENTER_TITLE_MARKER }
+        val hasTitle = matchedGroups.contains(WELFARE_CENTER_TITLE_MARKER)
+        return strongGroupCount >= 2 ||
+            (hasTitle && strongGroupCount >= 1) ||
+            hasWelfareTaskAreaMarkers()
+    }
+
+    private fun OcrResult.welfareCenterMarkerSummary(): String {
+        val matchedGroups = matchedWelfareCenterMarkerGroups().toMutableList()
+        if (hasWelfareTaskAreaMarkers()) {
+            matchedGroups += "任务区域"
+        }
+        return if (matchedGroups.isEmpty()) "无" else matchedGroups.joinToString("、")
+    }
+
+    private fun OcrResult.matchedWelfareCenterMarkerGroups(): List<String> {
+        return WELFARE_CENTER_MARKER_GROUPS.mapNotNull { (groupName, aliases) ->
+            if (aliases.any { alias -> hasText(alias) }) groupName else null
+        }
+    }
+
+    private fun OcrResult.hasWelfareTaskAreaMarkers(): Boolean {
+        val hasTaskAnchor = WELFARE_AD_TASKS.any { task -> hasAnyText(task.matchTexts) }
+        val hasTaskState = hasAnyText(TASK_ACTION_TEXTS)
+        val hasRewardHint = hasAnyText(WELFARE_TASK_REWARD_HINT_TEXTS)
+        return hasTaskAnchor && (hasTaskState || hasRewardHint)
     }
 
     private fun OcrScreen.upSwipeAction(): AutomationAction.SwipePoints {
@@ -595,19 +645,26 @@ class QidianPartialCheckInFlow(
         private const val MAX_CLICK_ATTEMPTS = 3
         private const val SHORT_VERIFY_TIMEOUT_MILLIS = 2_000L
         private const val NAVIGATION_VERIFY_TIMEOUT_MILLIS = 4_000L
-        private const val WELFARE_VERIFY_TIMEOUT_MILLIS = 6_000L
+        private const val WELFARE_VERIFY_TIMEOUT_MILLIS = 8_000L
         private const val AD_ENTRY_VERIFY_TIMEOUT_MILLIS = 6_000L
         private const val BROWSE_DIALOG_VERIFY_TIMEOUT_MILLIS = 5_000L
         private const val MY_PAGE_READY_DELAY_MILLIS = 2_000L
         private const val RETRY_DELAY_MILLIS = 1_000L
 
         private val BOTTOM_TABS = listOf("书架", "精选", "发现", "我")
-        private val WELFARE_CENTER_MARKERS = listOf("本周收益", "积分商城", "完成任务得奖励")
+        private const val WELFARE_CENTER_TITLE_MARKER = "福利中心"
+        private val WELFARE_CENTER_MARKER_GROUPS = listOf(
+            WELFARE_CENTER_TITLE_MARKER to listOf("福利中心"),
+            "本周收益" to listOf("本周收益", "周收益", "本周收"),
+            "积分商城" to listOf("积分商城", "积分商场", "积分商"),
+            "完成任务得奖励" to listOf("完成任务得奖励", "任务得奖励", "完成任务", "得奖励")
+        )
         private val GO_COMPLETE_TEXTS = listOf(GO_COMPLETE_TEXT, "去完", "去宪成", "去完咸")
         private val CLAIMED_TEXTS = listOf(CLAIMED_TEXT, "已领", "己领取", "己领")
         private val COMPLETED_TEXTS = listOf(COMPLETED_TEXT, "已完", "己完成", "己完")
         private val TASK_DONE_TEXTS = CLAIMED_TEXTS + COMPLETED_TEXTS
         private val TASK_ACTION_TEXTS = TASK_DONE_TEXTS + GO_COMPLETE_TEXTS
+        private val WELFARE_TASK_REWARD_HINT_TEXTS = listOf("广告任务", "章节卡", "订阅券", "多重好礼")
         private val BROWSE_ACTION_TEXTS = listOf(
             "点击去浏览",
             "去浏览",
