@@ -119,7 +119,7 @@ class QidianPartialCheckInFlow(
         }
         AppLogStore.add("步骤 5：OCR 已确认福利中心，命中 $markerCount 个验证文本")
 
-        AppLogStore.add("步骤 6：上滑福利中心页面")
+        AppLogStore.add("步骤 6：上滑福利中心页面，仅执行一次")
         executor.execute(welfareCenter.upSwipeAction()).getOrThrow()
         delay(900)
 
@@ -173,7 +173,7 @@ class QidianPartialCheckInFlow(
 
         var round = 0
         while (round < task.maxRounds) {
-            val action = findTaskActionWithScroll(task, bridge, executor)
+            val action = findTaskActionOnCurrentScreen(task, bridge)
                 ?: return FlowExecutionResult(false, "OCR 未找到“${task.title}”后面的“去完成 / 已完成”状态")
 
             when (action.actionText) {
@@ -200,12 +200,11 @@ class QidianPartialCheckInFlow(
         return FlowExecutionResult(false, "福利任务“${task.title}”已执行 ${task.maxRounds} 轮，仍未显示“已完成”")
     }
 
-    private suspend fun findTaskActionWithScroll(
+    private suspend fun findTaskActionOnCurrentScreen(
         task: WelfareAdTask,
-        bridge: AccessibilityBridge,
-        executor: ActionExecutor
+        bridge: AccessibilityBridge
     ): OcrActionTextMatch? {
-        repeat(TASK_SEARCH_ATTEMPTS) { index ->
+        repeat(TASK_STATUS_POLL_ATTEMPTS) { index ->
             val screen = captureOcrScreen(bridge).getOrNull()
             val action = screen?.ocr?.findActionAfterText(task.title, TASK_ACTION_TEXTS)
             if (action != null) {
@@ -213,11 +212,8 @@ class QidianPartialCheckInFlow(
                 return action
             }
 
-            if (screen != null && index < TASK_SEARCH_ATTEMPTS - 1) {
-                AppLogStore.add("当前屏未找到“${task.title}”，继续上滑查找")
-                executor.execute(screen.upSwipeAction()).getOrThrow()
-                delay(850)
-            } else {
+            if (index < TASK_STATUS_POLL_ATTEMPTS - 1) {
+                AppLogStore.add("当前屏未找到“${task.title}”，不额外上滑，仅等待后重试 OCR")
                 delay(600)
             }
         }
@@ -415,7 +411,7 @@ class QidianPartialCheckInFlow(
             WelfareAdTask(THREE_AD_TASK_TEXT, maxRounds = 5),
             WelfareAdTask(ONE_AD_TASK_TEXT, maxRounds = 3)
         )
-        private const val TASK_SEARCH_ATTEMPTS = 4
+        private const val TASK_STATUS_POLL_ATTEMPTS = 4
     }
 }
 
