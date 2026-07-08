@@ -116,17 +116,29 @@ class QidianPartialCheckInFlow(
         delay(900)
 
         AppLogStore.add("步骤 7-13：开始按 OCR 处理广告奖励任务")
+        var successfulTaskCount = 0
+        val failedTasks = mutableListOf<String>()
         for (task in WELFARE_AD_TASKS) {
             val taskResult = completeWelfareAdTask(task, bridge, executor)
-            if (!taskResult.completed) {
-                return taskResult
+            if (taskResult.completed) {
+                successfulTaskCount += 1
+            } else {
+                failedTasks += task.title
+                AppLogStore.add("福利任务“${task.title}”处理失败：${taskResult.message}；继续处理下一个独立任务")
             }
         }
 
-        return FlowExecutionResult(
-            completed = true,
-            message = "已完成当前配置的福利中心广告奖励任务"
-        )
+        return if (failedTasks.isEmpty()) {
+            FlowExecutionResult(
+                completed = true,
+                message = "已完成当前配置的福利中心广告奖励任务"
+            )
+        } else {
+            FlowExecutionResult(
+                completed = false,
+                message = "福利中心广告奖励任务已执行完毕，成功 $successfulTaskCount/${WELFARE_AD_TASKS.size}，失败：${failedTasks.joinToString("、")}"
+            )
+        }
     }
 
     override fun close() {
