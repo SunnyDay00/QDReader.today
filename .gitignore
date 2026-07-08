@@ -1,0 +1,19 @@
+# Local helper scripts and temporary automation files
+脚本/
+
+# Local AI agent notes
+AGENTS.md
+
+# Android and Gradle local state
+.gradle/
+build/
+*/build/
+local.properties
+
+# IDE state
+.idea/
+*.iml
+
+# Generated binaries
+*.apk
+*.aab
