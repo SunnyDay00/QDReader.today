@@ -300,14 +300,12 @@ class QidianPartialCheckInFlow(
         AppLogStore.add("步骤 8：点击“去完成”并验证广告界面")
         val initialCloseMatch = tapGoCompleteAndWaitForAd(task, round, initialAction, bridge, executor)
             ?: return FlowExecutionResult(false, "“${task.title}”第 $round 轮未识别到广告页右上角关闭按钮")
-        tapDetectedCloseButton(initialCloseMatch, executor, "广告奖励选择前")
 
-        AppLogStore.add("步骤 9：等待“点击去浏览 / 放弃奖励”弹窗")
-        val browseDialog = waitForOcr(bridge, "点击去浏览弹窗", timeoutMillis = 10_000) { ocr ->
-            ocr.hasAnyText(CLICK_TO_BROWSE_TEXTS)
-        } ?: return FlowExecutionResult(false, "“${task.title}”第 $round 轮未识别到“点击去浏览”弹窗")
+        AppLogStore.add("步骤 9：关闭广告并等待“点击去浏览 / 放弃奖励”弹窗")
+        val browseDialog = openBrowseDialogWithRetry(task, round, initialCloseMatch, bridge, executor)
+            ?: return FlowExecutionResult(false, "“${task.title}”第 $round 轮未识别到“点击去浏览”弹窗")
 
-        val browsePoint = browseDialog.ocr.findAnyTextCenter(CLICK_TO_BROWSE_TEXTS)
+        val browsePoint = browseDialog.findBrowseActionPoint()
             ?: return FlowExecutionResult(false, "“${task.title}”第 $round 轮未定位到“点击去浏览”坐标")
         executor.execute(AutomationAction.TapPoint(browsePoint)).getOrThrow()
         AppLogStore.add("已点击“点击去浏览”")
@@ -340,6 +338,47 @@ class QidianPartialCheckInFlow(
         }
 
         return FlowExecutionResult(true, "“${task.title}”第 $round 轮广告奖励已处理")
+    }
+
+    private suspend fun openBrowseDialogWithRetry(
+        task: WelfareAdTask,
+        round: Int,
+        initialCloseMatch: CloseButtonMatch,
+        bridge: AccessibilityBridge,
+        executor: ActionExecutor
+    ): OcrScreen? {
+        var closeMatch: CloseButtonMatch? = initialCloseMatch
+        for (attempt in 1..MAX_CLICK_ATTEMPTS) {
+            val activeCloseMatch = closeMatch ?: waitForCloseButton(bridge, timeoutMillis = SHORT_VERIFY_TIMEOUT_MILLIS)
+            if (activeCloseMatch == null) {
+                AppLogStore.add("第 $attempt/$MAX_CLICK_ATTEMPTS 次打开浏览弹窗前未找到广告关闭按钮")
+                logCurrentOcrPreview("浏览弹窗关闭按钮缺失", bridge)
+            } else {
+                tapDetectedCloseButton(activeCloseMatch, executor, "广告奖励选择前 $attempt/$MAX_CLICK_ATTEMPTS")
+            }
+
+            val browseDialog = waitForOcr(bridge, "点击去浏览弹窗", timeoutMillis = BROWSE_DIALOG_VERIFY_TIMEOUT_MILLIS) { ocr ->
+                ocr.hasAnyText(BROWSE_ACTION_TEXTS) || ocr.hasAnyText(GIVE_UP_REWARD_TEXTS)
+            }
+            if (browseDialog != null) {
+                return browseDialog
+            }
+
+            val hintScreen = captureOcrScreen(bridge).getOrNull()
+            if (hintScreen != null) {
+                AppLogStore.add(
+                    "“${task.title}”第 $round 轮未识别到浏览按钮；弹窗提示=${hintScreen.ocr.hasAnyText(BROWSE_DIALOG_HINT_TEXTS)}"
+                )
+                AppLogStore.add("广告弹窗 OCR 预览：${hintScreen.ocr.logPreview()}")
+            }
+
+            if (attempt < MAX_CLICK_ATTEMPTS) {
+                AppLogStore.add("未识别到“点击去浏览”弹窗，等待后重试关闭按钮")
+                delay(RETRY_DELAY_MILLIS)
+                closeMatch = waitForCloseButton(bridge, timeoutMillis = SHORT_VERIFY_TIMEOUT_MILLIS)
+            }
+        }
+        return null
     }
 
     private suspend fun tapGoCompleteAndWaitForAd(
@@ -395,6 +434,15 @@ class QidianPartialCheckInFlow(
             "已点击右上角关闭按钮（$phase）：${closeMatch.templateName}，分数 ${"%.3f".format(closeMatch.score)}"
         )
         delay(700)
+    }
+
+    private suspend fun logCurrentOcrPreview(
+        label: String,
+        bridge: AccessibilityBridge
+    ) {
+        captureOcrScreen(bridge).getOrNull()?.let { screen ->
+            AppLogStore.add("$label OCR 预览：${screen.ocr.logPreview()}")
+        }
     }
 
     private suspend fun waitForTree(
@@ -505,6 +553,18 @@ class QidianPartialCheckInFlow(
         )
     }
 
+    private fun OcrScreen.findBrowseActionPoint(): ScreenPoint? {
+        val directPoint = ocr.findAnyTextCenter(BROWSE_ACTION_TEXTS)
+        if (directPoint != null) {
+            return directPoint
+        }
+
+        val giveUpPoint = ocr.findAnyTextCenter(GIVE_UP_REWARD_TEXTS) ?: return null
+        val inferredActionX = if (giveUpPoint.x < width * 0.5f) width * 0.72f else width * 0.28f
+        AppLogStore.add("仅识别到“放弃奖励”，按同一行另一侧推断“点击去浏览”坐标")
+        return ScreenPoint(inferredActionX, giveUpPoint.y)
+    }
+
     companion object {
         private const val TAB_TITLE_ID = "com.qidian.QDReader:id/view_tab_title_title"
         private const val LOGIN_HINT_ID = "com.qidian.QDReader:id/tvLoginHint"
@@ -521,6 +581,7 @@ class QidianPartialCheckInFlow(
         private const val NAVIGATION_VERIFY_TIMEOUT_MILLIS = 4_000L
         private const val WELFARE_VERIFY_TIMEOUT_MILLIS = 6_000L
         private const val AD_ENTRY_VERIFY_TIMEOUT_MILLIS = 6_000L
+        private const val BROWSE_DIALOG_VERIFY_TIMEOUT_MILLIS = 5_000L
         private const val RETRY_DELAY_MILLIS = 1_000L
 
         private val BOTTOM_TABS = listOf("书架", "精选", "发现", "我")
@@ -528,7 +589,24 @@ class QidianPartialCheckInFlow(
         private val GO_COMPLETE_TEXTS = listOf(GO_COMPLETE_TEXT, "去完", "去宪成", "去完咸")
         private val COMPLETED_TEXTS = listOf(COMPLETED_TEXT, "已完", "己完成", "己完")
         private val TASK_ACTION_TEXTS = COMPLETED_TEXTS + GO_COMPLETE_TEXTS
-        private val CLICK_TO_BROWSE_TEXTS = listOf("点击去浏览", "去浏览")
+        private val BROWSE_ACTION_TEXTS = listOf(
+            "点击去浏览",
+            "去浏览",
+            "继续浏览",
+            "继续观看",
+            "继续看视频",
+            "继续看",
+            "去观看",
+            "点击去看",
+            "去查看"
+        )
+        private val GIVE_UP_REWARD_TEXTS = listOf("放弃奖励", "放弃")
+        private val BROWSE_DIALOG_HINT_TEXTS = BROWSE_ACTION_TEXTS + GIVE_UP_REWARD_TEXTS + listOf(
+            "看15秒",
+            "15秒",
+            "获得奖励",
+            "领取奖励"
+        )
         private val REWARD_GRANTED_TEXTS = listOf("恭喜已获得奖励", "恭喜获得奖励", "恭喜获得")
         private val REWARD_DIALOG_TEXTS = listOf("恭喜获得", "恭喜已获得奖励", "恭喜获得奖励")
         private val WELFARE_AD_TASKS = listOf(
