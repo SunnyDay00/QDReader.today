@@ -23,12 +23,9 @@ class MlKitChineseOcrEngine : OcrEngine {
             val elapsed = SystemClock.elapsedRealtime() - started
             OcrResult(
                 rawText = detectedText.text,
-                blocks = detectedText.textBlocks.map { block ->
-                    OcrTextBlock(
-                        text = block.text,
-                        bounds = block.boundingBox
-                    )
-                },
+                blocks = detectedText.textBlocks
+                    .flatMap { block -> block.lines }
+                    .map { line -> OcrTextBlock(text = line.text, bounds = line.boundingBox) },
                 elapsedMillis = elapsed
             )
         }

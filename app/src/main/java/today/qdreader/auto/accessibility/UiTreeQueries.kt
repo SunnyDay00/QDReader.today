@@ -2,6 +2,8 @@ package today.qdreader.auto.accessibility
 
 import android.graphics.Rect
 import kotlin.math.max
+import kotlin.math.pow
+import kotlin.math.sqrt
 
 fun UiNodeSnapshot.flatten(): Sequence<UiNodeSnapshot> = sequence {
     yield(this@flatten)
@@ -16,6 +18,16 @@ fun UiTreeSnapshot.findNode(
         (text == null || node.text == text) &&
             (viewId == null || node.viewId == viewId)
     }
+}
+
+fun UiTreeSnapshot.findNodes(
+    text: String? = null,
+    viewId: String? = null
+): List<UiNodeSnapshot> {
+    return root.flatten().filter { node ->
+        (text == null || node.text == text) &&
+            (viewId == null || node.viewId == viewId)
+    }.toList()
 }
 
 fun UiTreeSnapshot.hasNode(text: String, viewId: String? = null): Boolean {
@@ -41,6 +53,12 @@ fun Rect.centerPoint(): ScreenPoint {
         x = exactCenterX(),
         y = exactCenterY()
     )
+}
+
+fun Rect.distanceTo(other: Rect): Float {
+    val dx = exactCenterX() - other.exactCenterX()
+    val dy = exactCenterY() - other.exactCenterY()
+    return sqrt(dx.pow(2) + dy.pow(2))
 }
 
 private fun Rect.area(): Int {

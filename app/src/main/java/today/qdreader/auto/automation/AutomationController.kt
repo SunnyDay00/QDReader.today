@@ -5,6 +5,7 @@ import today.qdreader.auto.accessibility.AccessibilityBridgeImpl
 import today.qdreader.auto.core.AutomationTrigger
 import today.qdreader.auto.core.DeviceStatus
 import today.qdreader.auto.logs.AppLogStore
+import today.qdreader.auto.vision.MlKitChineseOcrEngine
 
 data class AutomationRunResult(
     val success: Boolean,
@@ -13,7 +14,7 @@ data class AutomationRunResult(
 
 class AutomationController(
     private val context: Context,
-    private val flow: CheckInFlow = QidianPartialCheckInFlow()
+    private val flowFactory: () -> CheckInFlow = { QidianPartialCheckInFlow(MlKitChineseOcrEngine()) }
 ) {
     suspend fun run(trigger: AutomationTrigger): AutomationRunResult {
         AppLogStore.add("自动化入口触发：${trigger.name}")
@@ -31,9 +32,14 @@ class AutomationController(
         }
 
         val executor = ActionExecutor(bridge)
-        val result = flow.run(bridge, executor)
-        AppLogStore.add(result.message)
-        return AutomationRunResult(success = result.completed, message = result.message)
+        val flow = flowFactory()
+        return try {
+            val result = flow.run(bridge, executor)
+            AppLogStore.add(result.message)
+            AutomationRunResult(success = result.completed, message = result.message)
+        } finally {
+            (flow as? AutoCloseable)?.close()
+        }
     }
 
     private fun fail(message: String): AutomationRunResult {
