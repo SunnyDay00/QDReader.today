@@ -16,7 +16,7 @@ import today.qdreader.auto.vision.CloseButtonMatch
 import today.qdreader.auto.vision.OcrActionTextMatch
 import today.qdreader.auto.vision.OcrEngine
 import today.qdreader.auto.vision.OcrResult
-import today.qdreader.auto.vision.findActionAfterText
+import today.qdreader.auto.vision.findActionAfterAnyText
 import today.qdreader.auto.vision.findAnyTextCenter
 import today.qdreader.auto.vision.hasText
 import today.qdreader.auto.vision.hasAnyText
@@ -176,13 +176,13 @@ class QidianPartialCheckInFlow(
             val action = findTaskActionOnCurrentScreen(task, bridge)
                 ?: return FlowExecutionResult(false, "OCR 未找到“${task.title}”后面的“去完成 / 已完成”状态")
 
-            when (action.actionText) {
-                COMPLETED_TEXT -> {
+            when {
+                action.actionText in COMPLETED_TEXTS -> {
                     AppLogStore.add("福利任务“${task.title}”已完成")
                     return FlowExecutionResult(true, "福利任务“${task.title}”已完成")
                 }
 
-                GO_COMPLETE_TEXT -> {
+                action.actionText in GO_COMPLETE_TEXTS -> {
                     round += 1
                     AppLogStore.add("福利任务“${task.title}”：第 $round 轮点击“去完成”")
                     executor.execute(AutomationAction.TapPoint(action.point)).getOrThrow()
@@ -206,7 +206,7 @@ class QidianPartialCheckInFlow(
     ): OcrActionTextMatch? {
         repeat(TASK_STATUS_POLL_ATTEMPTS) { index ->
             val screen = captureOcrScreen(bridge).getOrNull()
-            val action = screen?.ocr?.findActionAfterText(task.title, TASK_ACTION_TEXTS)
+            val action = screen?.ocr?.findActionAfterAnyText(task.matchTexts, TASK_ACTION_TEXTS)
             if (action != null) {
                 AppLogStore.add("OCR 已定位“${task.title}”状态：${action.actionText}")
                 return action
@@ -215,6 +215,11 @@ class QidianPartialCheckInFlow(
             if (index < TASK_STATUS_POLL_ATTEMPTS - 1) {
                 AppLogStore.add("当前屏未找到“${task.title}”，不额外上滑，仅等待后重试 OCR")
                 delay(600)
+            } else if (screen != null) {
+                AppLogStore.add(
+                    "OCR 匹配失败：“${task.title}”；锚点=${screen.ocr.hasAnyText(task.matchTexts)}，状态=${screen.ocr.hasAnyText(TASK_ACTION_TEXTS)}"
+                )
+                AppLogStore.add("OCR 文本预览：${screen.ocr.logPreview()}")
             }
         }
         return null
@@ -402,14 +407,28 @@ class QidianPartialCheckInFlow(
 
         private val BOTTOM_TABS = listOf("书架", "精选", "发现", "我")
         private val WELFARE_CENTER_MARKERS = listOf("本周收益", "积分商城", "完成任务得奖励")
-        private val TASK_ACTION_TEXTS = listOf(COMPLETED_TEXT, GO_COMPLETE_TEXT)
+        private val GO_COMPLETE_TEXTS = listOf(GO_COMPLETE_TEXT, "去完", "去宪成", "去完咸")
+        private val COMPLETED_TEXTS = listOf(COMPLETED_TEXT, "已完", "己完成", "己完")
+        private val TASK_ACTION_TEXTS = COMPLETED_TEXTS + GO_COMPLETE_TEXTS
         private val CLICK_TO_BROWSE_TEXTS = listOf("点击去浏览", "去浏览")
         private val REWARD_GRANTED_TEXTS = listOf("恭喜已获得奖励", "恭喜获得奖励", "恭喜获得")
         private val REWARD_DIALOG_TEXTS = listOf("恭喜获得", "恭喜已获得奖励", "恭喜获得奖励")
         private val WELFARE_AD_TASKS = listOf(
-            WelfareAdTask(INCENTIVE_TASK_TEXT, maxRounds = 5),
-            WelfareAdTask(THREE_AD_TASK_TEXT, maxRounds = 5),
-            WelfareAdTask(ONE_AD_TASK_TEXT, maxRounds = 3)
+            WelfareAdTask(
+                title = INCENTIVE_TASK_TEXT,
+                matchTexts = listOf(INCENTIVE_TASK_TEXT, "激励", "完成广告任务", "多重好礼"),
+                maxRounds = 5
+            ),
+            WelfareAdTask(
+                title = THREE_AD_TASK_TEXT,
+                matchTexts = listOf(THREE_AD_TASK_TEXT, "完成3个广告", "再完成3次", "10点章节卡"),
+                maxRounds = 5
+            ),
+            WelfareAdTask(
+                title = ONE_AD_TASK_TEXT,
+                matchTexts = listOf(ONE_AD_TASK_TEXT, "完成1个广告", "满10点", "3点订阅券"),
+                maxRounds = 3
+            )
         )
         private const val TASK_STATUS_POLL_ATTEMPTS = 4
     }
@@ -423,5 +442,15 @@ private data class OcrScreen(
 
 private data class WelfareAdTask(
     val title: String,
+    val matchTexts: List<String>,
     val maxRounds: Int
 )
+
+private fun OcrResult.logPreview(): String {
+    val lines = blocks
+        .map { block -> block.text.trim() }
+        .filter { text -> text.isNotEmpty() }
+        .take(16)
+    val preview = if (lines.isNotEmpty()) lines.joinToString(" | ") else rawText.replace('\n', '|')
+    return preview.take(220)
+}

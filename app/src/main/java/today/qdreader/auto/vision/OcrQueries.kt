@@ -42,14 +42,24 @@ fun OcrResult.findActionAfterText(
     anchorText: String,
     actionTexts: List<String>
 ): OcrActionTextMatch? {
-    val normalizedAnchor = anchorText.normalizedForOcr()
+    return findActionAfterAnyText(listOf(anchorText), actionTexts)
+}
+
+fun OcrResult.findActionAfterAnyText(
+    anchorTexts: List<String>,
+    actionTexts: List<String>
+): OcrActionTextMatch? {
+    val normalizedAnchors = anchorTexts.map { it.normalizedForOcr() }
     val normalizedActions = actionTexts.map { actionText -> actionText to actionText.normalizedForOcr() }
 
     val sameLineMatch = blocks.firstNotNullOfOrNull { block ->
         val bounds = block.bounds ?: return@firstNotNullOfOrNull null
         val normalizedText = block.text.normalizedForOcr()
+        val hasAnchor = normalizedAnchors.any { normalizedAnchor ->
+            normalizedText.contains(normalizedAnchor)
+        }
         val actionText = normalizedActions.firstOrNull { (_, normalizedAction) ->
-            normalizedText.contains(normalizedAnchor) && normalizedText.contains(normalizedAction)
+            hasAnchor && normalizedText.contains(normalizedAction)
         }?.first ?: return@firstNotNullOfOrNull null
         OcrActionTextMatch(
             actionText = actionText,
@@ -61,7 +71,9 @@ fun OcrResult.findActionAfterText(
         return sameLineMatch
     }
 
-    val anchors = findBlocksContaining(anchorText).mapNotNull { it.bounds }
+    val anchors = anchorTexts.flatMap { anchorText ->
+        findBlocksContaining(anchorText).mapNotNull { it.bounds }
+    }
     if (anchors.isEmpty()) return null
 
     val candidates = actionTexts.flatMap { actionText ->
