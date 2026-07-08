@@ -99,6 +99,9 @@ class QidianPartialCheckInFlow(
             return FlowExecutionResult(false, "起点读书未登录：检测到“登录/注册”，请先登录后再运行")
         }
 
+        AppLogStore.add("已进入我的界面，等待 ${MY_PAGE_READY_DELAY_MILLIS / 1_000} 秒后点击“福利中心”")
+        delay(MY_PAGE_READY_DELAY_MILLIS)
+
         AppLogStore.add("步骤 4：点击“福利中心”")
         val welfareCenter = tapWelfareCenterWithRetry(myPage, bridge, executor)
             ?: return FlowExecutionResult(false, "连续点击“福利中心”$MAX_CLICK_ATTEMPTS 次后仍未进入福利中心界面")
@@ -241,12 +244,12 @@ class QidianPartialCheckInFlow(
         var round = 0
         while (round < task.maxRounds) {
             val action = findTaskActionOnCurrentScreen(task, bridge)
-                ?: return FlowExecutionResult(false, "OCR 未找到“${task.title}”后面的“去完成 / 已完成”状态")
+                ?: return FlowExecutionResult(false, "OCR 未找到“${task.title}”后面的“去完成 / 已领取”状态")
 
             when {
-                action.actionText in COMPLETED_TEXTS -> {
-                    AppLogStore.add("福利任务“${task.title}”已完成")
-                    return FlowExecutionResult(true, "福利任务“${task.title}”已完成")
+                action.actionText in TASK_DONE_TEXTS -> {
+                    AppLogStore.add("福利任务“${task.title}”已领取")
+                    return FlowExecutionResult(true, "福利任务“${task.title}”已领取")
                 }
 
                 action.actionText in GO_COMPLETE_TEXTS -> {
@@ -262,7 +265,7 @@ class QidianPartialCheckInFlow(
             }
         }
 
-        return FlowExecutionResult(false, "福利任务“${task.title}”已执行 ${task.maxRounds} 轮，仍未显示“已完成”")
+        return FlowExecutionResult(false, "福利任务“${task.title}”已执行 ${task.maxRounds} 轮，仍未显示“已领取”")
     }
 
     private suspend fun findTaskActionOnCurrentScreen(
@@ -574,6 +577,7 @@ class QidianPartialCheckInFlow(
         private const val THREE_AD_TASK_TEXT = "完成3个广告任务得奖励"
         private const val ONE_AD_TASK_TEXT = "完成1个广告任务得奖励"
         private const val GO_COMPLETE_TEXT = "去完成"
+        private const val CLAIMED_TEXT = "已领取"
         private const val COMPLETED_TEXT = "已完成"
         private const val KNOW_TEXT = "知道了"
         private const val MAX_CLICK_ATTEMPTS = 3
@@ -582,13 +586,16 @@ class QidianPartialCheckInFlow(
         private const val WELFARE_VERIFY_TIMEOUT_MILLIS = 6_000L
         private const val AD_ENTRY_VERIFY_TIMEOUT_MILLIS = 6_000L
         private const val BROWSE_DIALOG_VERIFY_TIMEOUT_MILLIS = 5_000L
+        private const val MY_PAGE_READY_DELAY_MILLIS = 2_000L
         private const val RETRY_DELAY_MILLIS = 1_000L
 
         private val BOTTOM_TABS = listOf("书架", "精选", "发现", "我")
         private val WELFARE_CENTER_MARKERS = listOf("本周收益", "积分商城", "完成任务得奖励")
         private val GO_COMPLETE_TEXTS = listOf(GO_COMPLETE_TEXT, "去完", "去宪成", "去完咸")
+        private val CLAIMED_TEXTS = listOf(CLAIMED_TEXT, "已领", "己领取", "己领")
         private val COMPLETED_TEXTS = listOf(COMPLETED_TEXT, "已完", "己完成", "己完")
-        private val TASK_ACTION_TEXTS = COMPLETED_TEXTS + GO_COMPLETE_TEXTS
+        private val TASK_DONE_TEXTS = CLAIMED_TEXTS + COMPLETED_TEXTS
+        private val TASK_ACTION_TEXTS = TASK_DONE_TEXTS + GO_COMPLETE_TEXTS
         private val BROWSE_ACTION_TEXTS = listOf(
             "点击去浏览",
             "去浏览",
