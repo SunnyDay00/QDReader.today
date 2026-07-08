@@ -30,36 +30,34 @@ class OpenCvAdCloseButtonDetector(
             val templateNames = context.assets.list(TEMPLATE_DIR)
                 ?.filter { it.endsWith(".png", ignoreCase = true) }
                 .orEmpty()
-            if (templateNames.isEmpty()) {
-                null
-            } else {
-                val roi = topRightRoi(bitmap.width, bitmap.height)
-                val source = Mat()
-                val sourceGray = Mat()
-                val roiGray = Mat()
-                val roiEdges = Mat()
+            val roi = topRightRoi(bitmap.width, bitmap.height)
+            val source = Mat()
+            val sourceGray = Mat()
+            val roiGray = Mat()
+            val roiEdges = Mat()
 
-                try {
-                    Utils.bitmapToMat(bitmap, source)
-                    Imgproc.cvtColor(source, sourceGray, Imgproc.COLOR_RGBA2GRAY)
-                    val cvRoi = org.opencv.core.Rect(roi.left, roi.top, roi.width(), roi.height())
-                    sourceGray.submat(cvRoi).copyTo(roiGray)
-                    Imgproc.Canny(roiGray, roiEdges, 60.0, 160.0)
+            try {
+                Utils.bitmapToMat(bitmap, source)
+                Imgproc.cvtColor(source, sourceGray, Imgproc.COLOR_RGBA2GRAY)
+                val cvRoi = org.opencv.core.Rect(roi.left, roi.top, roi.width(), roi.height())
+                sourceGray.submat(cvRoi).copyTo(roiGray)
+                Imgproc.Canny(roiGray, roiEdges, 60.0, 160.0)
 
-                    templateNames
-                        .mapNotNull { templateName ->
-                            context.assets.open("$TEMPLATE_DIR/$templateName").use { stream ->
-                                BitmapFactory.decodeStream(stream)
-                            }?.let { template -> matchTemplate(roiGray, roiEdges, roi, template, templateName) }
-                        }
-                        .filter { it.score >= threshold }
-                        .maxWithOrNull(compareBy<CloseButtonMatch> { it.score }.thenBy { it.bounds.centerX() })
-                } finally {
-                    source.release()
-                    sourceGray.release()
-                    roiGray.release()
-                    roiEdges.release()
-                }
+                val templateMatch = templateNames
+                    .mapNotNull { templateName ->
+                        context.assets.open("$TEMPLATE_DIR/$templateName").use { stream ->
+                            BitmapFactory.decodeStream(stream)
+                        }?.let { template -> matchTemplate(roiGray, roiEdges, roi, template, templateName) }
+                    }
+                    .filter { it.score >= threshold }
+                    .maxWithOrNull(compareBy<CloseButtonMatch> { it.score }.thenBy { it.bounds.centerX() })
+
+                templateMatch ?: detectGeometricCloseButton(roiGray, roi, bitmap.width)
+            } finally {
+                source.release()
+                sourceGray.release()
+                roiGray.release()
+                roiEdges.release()
             }
         }
     }
@@ -116,6 +114,55 @@ class OpenCvAdCloseButtonDetector(
         }
     }
 
+    private fun detectGeometricCloseButton(
+        roiGray: Mat,
+        roi: Rect,
+        screenWidth: Int
+    ): CloseButtonMatch? {
+        val circles = Mat()
+        return try {
+            Imgproc.HoughCircles(
+                roiGray,
+                circles,
+                Imgproc.HOUGH_GRADIENT,
+                1.2,
+                28.0,
+                120.0,
+                18.0,
+                MIN_GEOMETRIC_RADIUS,
+                MAX_GEOMETRIC_RADIUS
+            )
+
+            val matches = (0 until circles.cols()).mapNotNull { index ->
+                val circle = circles.get(0, index) ?: return@mapNotNull null
+                if (circle.size < 3) return@mapNotNull null
+
+                val centerX = roi.left + circle[0].roundToInt()
+                val centerY = roi.top + circle[1].roundToInt()
+                val radius = circle[2].roundToInt()
+                if (centerX.toFloat() < screenWidth * GEOMETRIC_MIN_X_FRACTION) return@mapNotNull null
+                if (centerY.toFloat() > roi.height() * GEOMETRIC_MAX_Y_FRACTION) return@mapNotNull null
+
+                val bounds = Rect(
+                    centerX - radius,
+                    centerY - radius,
+                    centerX + radius,
+                    centerY + radius
+                )
+                CloseButtonMatch(
+                    point = ScreenPoint(centerX.toFloat(), centerY.toFloat()),
+                    bounds = bounds,
+                    score = GEOMETRIC_FALLBACK_SCORE,
+                    templateName = "geometric_top_right_circle"
+                )
+            }
+
+            matches.maxByOrNull { it.bounds.centerX() }
+        } finally {
+            circles.release()
+        }
+    }
+
     private fun topRightRoi(width: Int, height: Int): Rect {
         val left = (width * 0.68f).roundToInt()
         val bottom = (height * 0.22f).roundToInt()
@@ -125,6 +172,11 @@ class OpenCvAdCloseButtonDetector(
     companion object {
         private const val TEMPLATE_DIR = "templates/ad_close"
         private const val MIN_TEMPLATE_SIZE = 18
+        private const val MIN_GEOMETRIC_RADIUS = 14
+        private const val MAX_GEOMETRIC_RADIUS = 38
+        private const val GEOMETRIC_MIN_X_FRACTION = 0.84f
+        private const val GEOMETRIC_MAX_Y_FRACTION = 0.60f
+        private const val GEOMETRIC_FALLBACK_SCORE = 0.60
         private val TEMPLATE_SCALES = listOf(0.75, 0.9, 1.0, 1.15, 1.3)
     }
 }
