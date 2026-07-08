@@ -2,8 +2,13 @@ package today.qdreader.auto.vision
 
 import android.graphics.Rect
 import today.qdreader.auto.accessibility.ScreenPoint
-import kotlin.math.pow
-import kotlin.math.sqrt
+import kotlin.math.abs
+
+data class OcrActionTextMatch(
+    val actionText: String,
+    val point: ScreenPoint,
+    val bounds: Rect
+)
 
 fun OcrResult.hasText(needle: String): Boolean {
     val normalizedNeedle = needle.normalizedForOcr()
@@ -18,43 +23,86 @@ fun OcrResult.findBlocksContaining(needle: String): List<OcrTextBlock> {
     }
 }
 
-fun OcrResult.findGoCompleteAfterIncentiveTask(): ScreenPoint? {
-    val incentiveBlocks = findBlocksContaining("激励任务")
-    val goBlocks = findBlocksContaining("去完成")
+fun OcrResult.findTextCenter(needle: String): ScreenPoint? {
+    return findBlocksContaining(needle)
+        .mapNotNull { it.bounds }
+        .minByOrNull { bounds -> bounds.top * 10_000 + bounds.left }
+        ?.let { bounds -> ScreenPoint(bounds.exactCenterX(), bounds.exactCenterY()) }
+}
 
-    val rowBlock = blocks.firstOrNull { block ->
-        val text = block.text.normalizedForOcr()
-        block.bounds != null && text.contains("激励任务") && text.contains("去完成")
-    }
-    if (rowBlock?.bounds != null) {
-        val bounds = rowBlock.bounds
-        return ScreenPoint(
-            x = bounds.left + bounds.width() * 0.82f,
-            y = bounds.exactCenterY()
+fun OcrResult.findAnyTextCenter(needles: List<String>): ScreenPoint? {
+    return needles.firstNotNullOfOrNull { needle -> findTextCenter(needle) }
+}
+
+fun OcrResult.hasAnyText(needles: List<String>): Boolean {
+    return needles.any { needle -> hasText(needle) }
+}
+
+fun OcrResult.findActionAfterText(
+    anchorText: String,
+    actionTexts: List<String>
+): OcrActionTextMatch? {
+    val normalizedAnchor = anchorText.normalizedForOcr()
+    val normalizedActions = actionTexts.map { actionText -> actionText to actionText.normalizedForOcr() }
+
+    val sameLineMatch = blocks.firstNotNullOfOrNull { block ->
+        val bounds = block.bounds ?: return@firstNotNullOfOrNull null
+        val normalizedText = block.text.normalizedForOcr()
+        val actionText = normalizedActions.firstOrNull { (_, normalizedAction) ->
+            normalizedText.contains(normalizedAnchor) && normalizedText.contains(normalizedAction)
+        }?.first ?: return@firstNotNullOfOrNull null
+        OcrActionTextMatch(
+            actionText = actionText,
+            point = ScreenPoint(bounds.left + bounds.width() * 0.84f, bounds.exactCenterY()),
+            bounds = bounds
         )
     }
+    if (sameLineMatch != null) {
+        return sameLineMatch
+    }
 
-    val incentive = incentiveBlocks
-        .mapNotNull { it.bounds }
-        .minByOrNull { bounds -> bounds.top }
-        ?: return null
+    val anchors = findBlocksContaining(anchorText).mapNotNull { it.bounds }
+    if (anchors.isEmpty()) return null
 
-    return goBlocks
-        .mapNotNull { it.bounds }
-        .filter { candidate ->
-            candidate.exactCenterX() >= incentive.exactCenterX() ||
-                candidate.exactCenterY() >= incentive.top - 160
+    val candidates = actionTexts.flatMap { actionText ->
+        findBlocksContaining(actionText).mapNotNull { block ->
+            block.bounds?.let { bounds -> actionText to bounds }
         }
-        .minByOrNull { candidate -> candidate.distanceTo(incentive) }
-        ?.let { bounds -> ScreenPoint(bounds.exactCenterX(), bounds.exactCenterY()) }
+    }
+    if (candidates.isEmpty()) return null
+
+    return anchors
+        .flatMap { anchor ->
+            candidates.mapNotNull { (actionText, candidate) ->
+                if (!candidate.isLikelySameTaskRow(anchor)) return@mapNotNull null
+                val score = abs(candidate.exactCenterY() - anchor.exactCenterY()) * 4 +
+                    abs(candidate.exactCenterX() - anchor.exactCenterX())
+                ScoredOcrActionTextMatch(
+                    match = OcrActionTextMatch(
+                        actionText = actionText,
+                        point = ScreenPoint(candidate.exactCenterX(), candidate.exactCenterY()),
+                        bounds = candidate
+                    ),
+                    score = score
+                )
+            }
+        }
+        .minByOrNull { it.score }
+        ?.match
 }
 
 private fun String.normalizedForOcr(): String {
     return filterNot { it.isWhitespace() || it == '/' || it == '\\' || it == '|' }
 }
 
-private fun Rect.distanceTo(other: Rect): Float {
-    val dx = exactCenterX() - other.exactCenterX()
-    val dy = exactCenterY() - other.exactCenterY()
-    return sqrt(dx.pow(2) + dy.pow(2))
+private fun Rect.isLikelySameTaskRow(anchor: Rect): Boolean {
+    val verticalTolerance = maxOf(150f, anchor.height() * 3.2f)
+    val verticalDelta = abs(exactCenterY() - anchor.exactCenterY())
+    val isRightOfAnchor = exactCenterX() >= anchor.exactCenterX()
+    return isRightOfAnchor && verticalDelta <= verticalTolerance
 }
+
+private data class ScoredOcrActionTextMatch(
+    val match: OcrActionTextMatch,
+    val score: Float
+)
