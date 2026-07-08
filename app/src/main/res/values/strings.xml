@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">QDReader.today</string>
-    <string name="accessibility_service_label">QDReader.today 自动化服务</string>
+    <string name="app_name">起点自动签到</string>
+    <string name="accessibility_service_label">起点自动签到无障碍服务</string>
     <string name="accessibility_service_description">读取起点读书界面、截图并执行用户配置的自动化点击。</string>
-    <string name="notification_channel_name">自动化状态</string>
+    <string name="notification_channel_name">自动任务状态</string>
 </resources>

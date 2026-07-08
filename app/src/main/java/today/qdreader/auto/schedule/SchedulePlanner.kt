@@ -17,7 +17,7 @@ object SchedulePlanner {
 
         if (!config.enabled) {
             workManager.cancelUniqueWork(AppConstants.UNIQUE_DAILY_WORK)
-            AppLogStore.add("每日调度已关闭")
+            AppLogStore.add("每日自动任务已关闭")
             return
         }
 
@@ -31,7 +31,7 @@ object SchedulePlanner {
             ExistingWorkPolicy.REPLACE,
             request
         )
-        AppLogStore.add("已安排每日占位任务：${config.label()}")
+        AppLogStore.add("已安排每日自动任务：${config.label()}")
     }
 
     fun nextDelayMillis(hour: Int, minute: Int, now: Calendar = Calendar.getInstance()): Long {

@@ -17,7 +17,7 @@ object AppNotifier {
             context.getString(R.string.notification_channel_name),
             NotificationManager.IMPORTANCE_DEFAULT
         ).apply {
-            description = "QDReader.today automation status"
+            description = "起点自动签到运行状态"
         }
         context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }

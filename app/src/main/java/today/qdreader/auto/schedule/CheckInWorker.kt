@@ -15,7 +15,7 @@ class CheckInWorker(
         val runResult = AutomationController(applicationContext).run(AutomationTrigger.Scheduled)
         AppNotifier.showStatus(
             applicationContext,
-            if (runResult.success) "QDReader.today 定时任务" else "QDReader.today 定时任务未执行",
+            if (runResult.success) "起点自动签到定时任务" else "起点自动签到定时任务未完成",
             runResult.message
         )
         SchedulePlanner.reschedule(applicationContext)

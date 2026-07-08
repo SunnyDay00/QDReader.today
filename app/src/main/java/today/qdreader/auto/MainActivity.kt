@@ -18,9 +18,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -29,7 +29,6 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -46,7 +45,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -77,8 +75,6 @@ import today.qdreader.auto.schedule.ScheduleConfig
 import today.qdreader.auto.schedule.SchedulePlanner
 import today.qdreader.auto.schedule.ScheduleRepository
 import today.qdreader.auto.ui.theme.QDReaderTheme
-import today.qdreader.auto.vision.MlKitChineseOcrEngine
-import today.qdreader.auto.vision.OpenCvTemplateMatcher
 
 data class DashboardState(
     val accessibilityEnabled: Boolean,
@@ -100,17 +96,14 @@ class MainActivity : ComponentActivity() {
         setContent {
             QDReaderTheme {
                 val activity = this@MainActivity
-                val context = LocalContext.current
                 val scope = rememberCoroutineScope()
                 val logs by AppLogStore.entries.collectAsStateWithLifecycle()
                 var dashboardState by remember {
                     mutableStateOf(loadDashboardState(activity, scheduleRepository))
                 }
-                var testOutput by remember {
-                    mutableStateOf("测试结果会显示在这里。")
+                var runOutput by remember {
+                    mutableStateOf("尚未运行自动任务。")
                 }
-                val ocrEngine = remember { MlKitChineseOcrEngine() }
-                val templateMatcher = remember { OpenCvTemplateMatcher(context) }
                 val notificationLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission()
                 ) { granted ->
@@ -127,17 +120,13 @@ class MainActivity : ComponentActivity() {
                 }
 
                 LaunchedEffect(Unit) {
-                    AppLogStore.add("框架界面已启动")
-                }
-
-                DisposableEffect(Unit) {
-                    onDispose { ocrEngine.close() }
+                    AppLogStore.add("起点自动签到界面已启动")
                 }
 
                 DashboardScreen(
                     state = dashboardState,
                     logs = logs,
-                    testOutput = testOutput,
+                    runOutput = runOutput,
                     onRefresh = { refresh() },
                     onOpenAccessibility = {
                         DeviceStatus.openAccessibilitySettings(activity)
@@ -154,34 +143,23 @@ class MainActivity : ComponentActivity() {
                             AppLogStore.add("未找到起点读书启动入口")
                         }
                     },
-                    onRunPlaceholder = {
+                    onRunAutomation = {
                         scope.launch {
+                            runOutput = "自动任务运行中..."
                             val result = AutomationController(activity).run(AutomationTrigger.Manual)
-                            testOutput = result.message
+                            runOutput = result.message
                             AppNotifier.showStatus(
                                 activity,
-                                if (result.success) "自动化流程已完成当前阶段" else "自动化流程未完成",
+                                if (result.success) "起点自动签到已完成" else "起点自动签到未完成",
                                 result.message
                             )
-                            refresh()
-                        }
-                    },
-                    onRunOcr = {
-                        scope.launch {
-                            testOutput = runOcrTest(activity, ocrEngine)
-                            refresh()
-                        }
-                    },
-                    onRunTemplate = {
-                        scope.launch {
-                            testOutput = runTemplateTest(activity, templateMatcher)
                             refresh()
                         }
                     },
                     onSaveSchedule = { config ->
                         scheduleRepository.save(config)
                         SchedulePlanner.reschedule(activity)
-                        AppLogStore.add("保存每日时间：${config.label()}，启用=${config.enabled}")
+                        AppLogStore.add("保存每日自动任务时间：${config.label()}，启用=${config.enabled}")
                         refresh()
                     },
                     onClearLogs = {
@@ -208,82 +186,24 @@ private fun loadDashboardState(
     )
 }
 
-private suspend fun runOcrTest(
-    context: android.content.Context,
-    ocrEngine: MlKitChineseOcrEngine
-): String {
-    AppLogStore.add("开始截图 OCR 测试")
-    val bridge = AccessibilityBridgeImpl(context)
-    val bitmap = bridge.captureScreenshot().getOrElse { error ->
-        val message = "OCR 测试失败：${error.message}"
-        AppLogStore.add(message)
-        return message
-    }
-
-    val result = ocrEngine.recognize(bitmap).getOrElse { error ->
-        bitmap.recycle()
-        val message = "OCR 识别失败：${error.message}"
-        AppLogStore.add(message)
-        return message
-    }
-    bitmap.recycle()
-
-    val preview = result.blocks.take(12).joinToString("\n") { block ->
-        val bounds = block.bounds?.let { "[${it.left},${it.top},${it.right},${it.bottom}]" } ?: "[]"
-        "$bounds ${block.text.replace('\n', ' ')}"
-    }.ifBlank { "未识别到文字" }
-
-    val message = "OCR 完成：${result.blocks.size} 个文本块，耗时 ${result.elapsedMillis} ms"
-    AppLogStore.add(message)
-    return "$message\n\n$preview"
-}
-
-private suspend fun runTemplateTest(
-    context: android.content.Context,
-    templateMatcher: OpenCvTemplateMatcher
-): String {
-    AppLogStore.add("开始 OpenCV 模板匹配测试")
-    val bridge = AccessibilityBridgeImpl(context)
-    val bitmap = bridge.captureScreenshot().getOrElse { error ->
-        val message = "模板匹配失败：${error.message}"
-        AppLogStore.add(message)
-        return message
-    }
-
-    val result = templateMatcher.matchAny(bitmap).getOrElse { error ->
-        bitmap.recycle()
-        val message = "模板匹配异常：${error.message}"
-        AppLogStore.add(message)
-        return message
-    }
-    bitmap.recycle()
-
-    val bounds = result.bounds?.let { "[${it.left},${it.top},${it.right},${it.bottom}]" } ?: "[]"
-    val message = "模板匹配：${result.message}，模板=${result.templateName ?: "无"}，分数=${"%.3f".format(result.score)}，阈值=${result.threshold}，位置=$bounds，耗时 ${result.elapsedMillis} ms"
-    AppLogStore.add(message)
-    return message
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DashboardScreen(
     state: DashboardState,
     logs: List<AppLogEntry>,
-    testOutput: String,
+    runOutput: String,
     onRefresh: () -> Unit,
     onOpenAccessibility: () -> Unit,
     onRequestNotification: () -> Unit,
     onOpenTargetApp: () -> Unit,
-    onRunPlaceholder: () -> Unit,
-    onRunOcr: () -> Unit,
-    onRunTemplate: () -> Unit,
+    onRunAutomation: () -> Unit,
     onSaveSchedule: (ScheduleConfig) -> Unit,
     onClearLogs: () -> Unit
 ) {
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text("QDReader.today", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = { Text("起点自动签到", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background
                 )
@@ -299,31 +219,29 @@ private fun DashboardScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             item {
-                StatusPanel(state = state, onRefresh = onRefresh)
+                HeaderPanel(state = state)
+            }
+            item {
+                AutomationPanel(
+                    config = state.scheduleConfig,
+                    runOutput = runOutput,
+                    onRunAutomation = onRunAutomation,
+                    onSaveSchedule = onSaveSchedule
+                )
             }
             item {
                 PermissionPanel(
+                    state = state,
                     onOpenAccessibility = onOpenAccessibility,
                     onRequestNotification = onRequestNotification,
                     onOpenTargetApp = onOpenTargetApp
                 )
             }
             item {
-                TestPanel(
-                    testOutput = testOutput,
-                    onRunPlaceholder = onRunPlaceholder,
-                    onRunOcr = onRunOcr,
-                    onRunTemplate = onRunTemplate
-                )
-            }
-            item {
-                SchedulePanel(
-                    config = state.scheduleConfig,
-                    onSaveSchedule = onSaveSchedule
-                )
-            }
-            item {
                 LogsPanel(logs = logs, onClearLogs = onClearLogs)
+            }
+            item {
+                StatusPanel(state = state, onRefresh = onRefresh)
             }
             item {
                 Spacer(modifier = Modifier.height(16.dp))
@@ -358,140 +276,125 @@ private fun SectionCard(
 }
 
 @Composable
-private fun StatusPanel(state: DashboardState, onRefresh: () -> Unit) {
-    SectionCard(title = "状态") {
-        StatusRow("无障碍授权", state.accessibilityEnabled)
-        StatusRow("服务连接", state.serviceConnected)
-        StatusRow("通知权限", state.notificationGranted)
-        StatusRow("起点读书", state.targetInstalled)
-        Text(
-            text = "当前窗口：${state.currentPackageName ?: "未知"}",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.secondary
-        )
-        OutlinedButton(onClick = onRefresh) {
-            Icon(Icons.Filled.Refresh, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("刷新状态")
+private fun HeaderPanel(state: DashboardState) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBFA)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            BookLogo()
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "起点自动签到",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = if (state.accessibilityEnabled && state.serviceConnected) {
+                        "自动任务服务已连接"
+                    } else {
+                        "开启权限后可运行自动任务"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
+            ReadinessPill(
+                label = if (state.accessibilityEnabled && state.serviceConnected) "就绪" else "待授权",
+                ok = state.accessibilityEnabled && state.serviceConnected
+            )
         }
     }
 }
 
 @Composable
-private fun StatusRow(label: String, ok: Boolean) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+private fun BookLogo() {
+    Box(
+        modifier = Modifier
+            .size(46.dp)
+            .background(Color(0xFFDC2626), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+            .padding(9.dp)
     ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
         Box(
             modifier = Modifier
-                .background(
-                    color = if (ok) Color(0xFFE0F2F1) else Color(0xFFFFF1F2),
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
-                )
-                .padding(horizontal = 10.dp, vertical = 5.dp)
+                .fillMaxSize()
+                .background(Color.White.copy(alpha = 0.96f), androidx.compose.foundation.shape.RoundedCornerShape(3.dp))
+        )
+        Box(
+            modifier = Modifier
+                .width(5.dp)
+                .fillMaxSize()
+                .background(Color(0xFF991B1B), androidx.compose.foundation.shape.RoundedCornerShape(2.dp))
+        )
+        Column(
+            modifier = Modifier
+                .padding(start = 10.dp, top = 8.dp, end = 4.dp)
+                .fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Text(
-                text = if (ok) "已就绪" else "未就绪",
-                color = if (ok) Color(0xFF0F766E) else Color(0xFFBE123C),
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Medium
-            )
-        }
-    }
-}
-
-@Composable
-private fun PermissionPanel(
-    onOpenAccessibility: () -> Unit,
-    onRequestNotification: () -> Unit,
-    onOpenTargetApp: () -> Unit
-) {
-    SectionCard(title = "权限") {
-        Button(onClick = onOpenAccessibility, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Filled.Settings, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("打开无障碍设置")
-        }
-        OutlinedButton(onClick = onRequestNotification, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Filled.Notifications, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("请求通知权限")
-        }
-        OutlinedButton(onClick = onOpenTargetApp, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Filled.PlayArrow, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("打开起点读书")
-        }
-    }
-}
-
-@Composable
-private fun TestPanel(
-    testOutput: String,
-    onRunPlaceholder: () -> Unit,
-    onRunOcr: () -> Unit,
-    onRunTemplate: () -> Unit
-) {
-    SectionCard(title = "测试") {
-        Button(onClick = onRunOcr, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Filled.Search, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("截图并识别文字")
-        }
-        OutlinedButton(onClick = onRunTemplate, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Filled.Search, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("测试模板匹配")
-        }
-        OutlinedButton(onClick = onRunPlaceholder, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Filled.PlayArrow, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("运行起点自动任务步骤")
-        }
-        SelectionContainer {
-            Text(
-                text = testOutput,
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(
-                        Color(0xFFF1F5F9),
-                        androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
-                    )
-                    .padding(10.dp),
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace
+                    .height(2.dp)
+                    .background(Color(0xFFDC2626), androidx.compose.foundation.shape.RoundedCornerShape(1.dp))
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.72f)
+                    .height(2.dp)
+                    .background(Color(0xFFDC2626), androidx.compose.foundation.shape.RoundedCornerShape(1.dp))
             )
         }
     }
 }
 
 @Composable
-private fun SchedulePanel(
+private fun AutomationPanel(
     config: ScheduleConfig,
+    runOutput: String,
+    onRunAutomation: () -> Unit,
     onSaveSchedule: (ScheduleConfig) -> Unit
 ) {
     var enabled by remember(config) { mutableStateOf(config.enabled) }
     var hourText by remember(config) { mutableStateOf("%02d".format(config.hour)) }
     var minuteText by remember(config) { mutableStateOf("%02d".format(config.minute)) }
 
-    SectionCard(title = "调度") {
+    SectionCard(title = "自动任务") {
+        Button(
+            onClick = onRunAutomation,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
+        ) {
+            Icon(Icons.Filled.PlayArrow, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("运行自动签到")
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Schedule, contentDescription = null)
+                Icon(Icons.Filled.Schedule, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("每日自动任务")
+                Text("每日自动运行")
             }
             Switch(checked = enabled, onCheckedChange = { enabled = it })
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             OutlinedTextField(
                 value = hourText,
                 onValueChange = { hourText = it.filter(Char::isDigit).take(2) },
@@ -508,24 +411,106 @@ private fun SchedulePanel(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
             )
+            OutlinedButton(
+                onClick = {
+                    onSaveSchedule(
+                        ScheduleConfig(
+                            enabled = enabled,
+                            hour = hourText.toIntOrNull()?.coerceIn(0, 23) ?: 9,
+                            minute = minuteText.toIntOrNull()?.coerceIn(0, 59) ?: 0
+                        )
+                    )
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(56.dp)
+            ) {
+                Text("保存")
+            }
         }
 
-        Button(
-            onClick = {
-                onSaveSchedule(
-                    ScheduleConfig(
-                        enabled = enabled,
-                        hour = hourText.toIntOrNull()?.coerceIn(0, 23) ?: 9,
-                        minute = minuteText.toIntOrNull()?.coerceIn(0, 59) ?: 0
+        SelectionContainer {
+            Text(
+                text = runOutput,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        Color(0xFFFFF1F2),
+                        androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
                     )
-                )
-            },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Icon(Icons.Filled.Schedule, contentDescription = null)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("保存调度")
+                    .padding(10.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF7F1D1D)
+            )
         }
+    }
+}
+
+@Composable
+private fun PermissionPanel(
+    state: DashboardState,
+    onOpenAccessibility: () -> Unit,
+    onRequestNotification: () -> Unit,
+    onOpenTargetApp: () -> Unit
+) {
+    SectionCard(title = "权限") {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CompactStatus("无障碍", state.accessibilityEnabled, Modifier.weight(1f))
+            CompactStatus("通知", state.notificationGranted, Modifier.weight(1f))
+            CompactStatus("起点", state.targetInstalled, Modifier.weight(1f))
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(onClick = onOpenAccessibility, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("无障碍")
+            }
+            OutlinedButton(onClick = onRequestNotification, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Filled.Notifications, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("通知")
+            }
+            OutlinedButton(onClick = onOpenTargetApp, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("起点")
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactStatus(label: String, ok: Boolean, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .background(
+                color = if (ok) Color(0xFFEFFDF5) else Color(0xFFFFF1F2),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
+            )
+            .padding(horizontal = 8.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .background(
+                    color = if (ok) Color(0xFF16A34A) else Color(0xFFDC2626),
+                    shape = androidx.compose.foundation.shape.CircleShape
+                )
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -540,8 +525,8 @@ private fun LogsPanel(logs: List<AppLogEntry>, onClearLogs: () -> Unit) {
                 onClick = onClearLogs,
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.secondary)
             ) {
-                Icon(Icons.Filled.Clear, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
+                Icon(Icons.Filled.Clear, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(6.dp))
                 Text("清空")
             }
         }
@@ -550,7 +535,7 @@ private fun LogsPanel(logs: List<AppLogEntry>, onClearLogs: () -> Unit) {
         } else {
             SelectionContainer {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    logs.take(30).forEach { entry ->
+                    logs.take(24).forEach { entry ->
                         Text(
                             text = "${entry.timestamp}  ${entry.message}",
                             style = MaterialTheme.typography.bodySmall,
@@ -560,5 +545,56 @@ private fun LogsPanel(logs: List<AppLogEntry>, onClearLogs: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun StatusPanel(state: DashboardState, onRefresh: () -> Unit) {
+    SectionCard(title = "状态") {
+        StatusRow("无障碍授权", state.accessibilityEnabled)
+        StatusRow("服务连接", state.serviceConnected)
+        StatusRow("通知权限", state.notificationGranted)
+        StatusRow("起点读书", state.targetInstalled)
+        Text(
+            text = "当前窗口：${state.currentPackageName ?: "未知"}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.secondary
+        )
+        OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(6.dp))
+            Text("刷新状态")
+        }
+    }
+}
+
+@Composable
+private fun StatusRow(label: String, ok: Boolean) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+        ReadinessPill(label = if (ok) "已就绪" else "未就绪", ok = ok)
+    }
+}
+
+@Composable
+private fun ReadinessPill(label: String, ok: Boolean) {
+    Box(
+        modifier = Modifier
+            .background(
+                color = if (ok) Color(0xFFEFFDF5) else Color(0xFFFFF1F2),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
+            )
+            .padding(horizontal = 10.dp, vertical = 5.dp)
+    ) {
+        Text(
+            text = label,
+            color = if (ok) Color(0xFF15803D) else Color(0xFFBE123C),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Medium
+        )
     }
 }
