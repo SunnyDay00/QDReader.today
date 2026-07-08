@@ -6,6 +6,7 @@ import today.qdreader.auto.core.AutomationTrigger
 import today.qdreader.auto.core.DeviceStatus
 import today.qdreader.auto.logs.AppLogStore
 import today.qdreader.auto.vision.MlKitChineseOcrEngine
+import today.qdreader.auto.vision.OpenCvAdCloseButtonDetector
 
 data class AutomationRunResult(
     val success: Boolean,
@@ -14,7 +15,12 @@ data class AutomationRunResult(
 
 class AutomationController(
     private val context: Context,
-    private val flowFactory: () -> CheckInFlow = { QidianPartialCheckInFlow(MlKitChineseOcrEngine()) }
+    private val flowFactory: () -> CheckInFlow = {
+        QidianPartialCheckInFlow(
+            ocrEngine = MlKitChineseOcrEngine(),
+            closeButtonDetector = OpenCvAdCloseButtonDetector(context)
+        )
+    }
 ) {
     suspend fun run(trigger: AutomationTrigger): AutomationRunResult {
         AppLogStore.add("自动化入口触发：${trigger.name}")

@@ -11,6 +11,7 @@ import today.qdreader.auto.accessibility.hasAllTexts
 import today.qdreader.auto.accessibility.hasNode
 import today.qdreader.auto.core.AppConstants
 import today.qdreader.auto.logs.AppLogStore
+import today.qdreader.auto.vision.CloseButtonDetector
 import today.qdreader.auto.vision.OcrEngine
 import today.qdreader.auto.vision.OcrResult
 import today.qdreader.auto.vision.findGoCompleteAfterIncentiveTask
@@ -68,7 +69,8 @@ class PlaceholderCheckInFlow : CheckInFlow {
 }
 
 class QidianPartialCheckInFlow(
-    private val ocrEngine: OcrEngine
+    private val ocrEngine: OcrEngine,
+    private val closeButtonDetector: CloseButtonDetector
 ) : CheckInFlow, AutoCloseable {
     override suspend fun run(
         bridge: AccessibilityBridge,
@@ -127,9 +129,16 @@ class QidianPartialCheckInFlow(
         executor.execute(AutomationAction.TapPoint(goCompletePoint)).getOrThrow()
         AppLogStore.add("已通过 OCR 点击“激励任务”后的“去完成”按钮")
 
+        AppLogStore.add("步骤 8：等待广告页面加载")
+        delay(2_000)
+        val closeMatch = detectCloseButton(bridge)
+            ?: return FlowExecutionResult(false, "未识别到右上角广告关闭按钮")
+        executor.execute(AutomationAction.TapPoint(closeMatch.point)).getOrThrow()
+        AppLogStore.add("已点击广告关闭按钮：${closeMatch.templateName}，分数 ${"%.3f".format(closeMatch.score)}")
+
         return FlowExecutionResult(
             completed = true,
-            message = "已点击激励任务“去完成”；后续任务页面处理步骤尚未实现"
+            message = "已点击激励任务“去完成”并关闭广告；后续步骤尚未实现"
         )
     }
 
@@ -208,6 +217,16 @@ class QidianPartialCheckInFlow(
                 height = activeBitmap.height
             )
         }.also {
+            bitmap?.recycle()
+        }
+    }
+
+    private suspend fun detectCloseButton(bridge: AccessibilityBridge): today.qdreader.auto.vision.CloseButtonMatch? {
+        var bitmap: Bitmap? = null
+        return try {
+            bitmap = bridge.captureScreenshot().getOrThrow()
+            closeButtonDetector.detectCloseButton(bitmap).getOrThrow()
+        } finally {
             bitmap?.recycle()
         }
     }
