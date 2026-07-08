@@ -157,9 +157,10 @@ class MainActivity : ComponentActivity() {
                     onRunPlaceholder = {
                         scope.launch {
                             val result = AutomationController(activity).run(AutomationTrigger.Manual)
+                            testOutput = result.message
                             AppNotifier.showStatus(
                                 activity,
-                                if (result.success) "自动化框架已触发" else "自动化框架未执行",
+                                if (result.success) "自动化流程已完成当前阶段" else "自动化流程未完成",
                                 result.message
                             )
                             refresh()
@@ -448,7 +449,7 @@ private fun TestPanel(
         OutlinedButton(onClick = onRunPlaceholder, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Filled.PlayArrow, contentDescription = null)
             Spacer(modifier = Modifier.width(8.dp))
-            Text("触发自动化占位流程")
+            Text("运行起点自动任务步骤")
         }
         SelectionContainer {
             Text(
@@ -485,7 +486,7 @@ private fun SchedulePanel(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Filled.Schedule, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("每日占位任务")
+                Text("每日自动任务")
             }
             Switch(checked = enabled, onCheckedChange = { enabled = it })
         }

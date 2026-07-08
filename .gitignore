@@ -17,3 +17,4 @@ local.properties
 # Generated binaries
 *.apk
 *.aab
+artifacts/

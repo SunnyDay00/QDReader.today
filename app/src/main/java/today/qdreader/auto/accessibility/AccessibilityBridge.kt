@@ -32,4 +32,6 @@ interface AccessibilityBridge {
     suspend fun swipe(start: ScreenPoint, end: ScreenPoint, durationMillis: Long = 350): Result<Unit>
     fun performBack(): Boolean
     fun launchTargetApp(): Boolean
+    fun restartTargetApp(): Boolean
+    fun launchAutomationApp(): Boolean
 }

@@ -44,4 +44,8 @@ class AccessibilityBridgeImpl(
     }
 
     override fun launchTargetApp(): Boolean = DeviceStatus.openTargetApp(context)
+
+    override fun restartTargetApp(): Boolean = DeviceStatus.restartTargetApp(context)
+
+    override fun launchAutomationApp(): Boolean = DeviceStatus.openAutomationApp(context)
 }

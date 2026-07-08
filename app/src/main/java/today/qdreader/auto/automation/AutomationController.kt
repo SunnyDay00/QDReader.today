@@ -13,7 +13,7 @@ data class AutomationRunResult(
 
 class AutomationController(
     private val context: Context,
-    private val flow: CheckInFlow = PlaceholderCheckInFlow()
+    private val flow: CheckInFlow = QidianPartialCheckInFlow()
 ) {
     suspend fun run(trigger: AutomationTrigger): AutomationRunResult {
         AppLogStore.add("自动化入口触发：${trigger.name}")
@@ -31,11 +31,9 @@ class AutomationController(
         }
 
         val executor = ActionExecutor(bridge)
-        val step = flow.detectCurrentStep(null)
-        val action = flow.nextAction(step)
-        val result = flow.executeAction(action, executor)
+        val result = flow.run(bridge, executor)
         AppLogStore.add(result.message)
-        return AutomationRunResult(success = true, message = result.message)
+        return AutomationRunResult(success = result.completed, message = result.message)
     }
 
     private fun fail(message: String): AutomationRunResult {
