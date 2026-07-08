@@ -90,14 +90,8 @@ class QidianPartialCheckInFlow(
         } ?: return FlowExecutionResult(false, "未进入起点读书首页：未检测到底部 4 个 tab")
 
         AppLogStore.add("步骤 2：已检测到底部 tab，点击“我”")
-        val meNode = home.findNode(text = "我", viewId = TAB_TITLE_ID)
-            ?: return FlowExecutionResult(false, "未找到“我”tab")
-        executor.execute(AutomationAction.TapPoint(home.clickPointFor(meNode))).getOrThrow()
-
-        val myPage = waitForTree(bridge, "我的界面", timeoutMillis = 8_000) { tree ->
-            tree.packageName == AppConstants.QIDIAN_PACKAGE &&
-                (tree.isLoggedOutMyPage() || tree.findNode(text = "福利中心", viewId = WELFARE_TITLE_ID) != null)
-        } ?: return FlowExecutionResult(false, "点击“我”后未进入我的界面")
+        val myPage = tapMeTabWithRetry(home, bridge, executor)
+            ?: return FlowExecutionResult(false, "连续点击“我”$MAX_CLICK_ATTEMPTS 次后仍未进入我的界面")
 
         AppLogStore.add("步骤 3：检查登录状态")
         if (myPage.isLoggedOutMyPage()) {
@@ -106,13 +100,8 @@ class QidianPartialCheckInFlow(
         }
 
         AppLogStore.add("步骤 4：点击“福利中心”")
-        val welfareNode = myPage.findNode(text = "福利中心", viewId = WELFARE_TITLE_ID)
-            ?: return FlowExecutionResult(false, "已登录，但未找到“福利中心”入口")
-        executor.execute(AutomationAction.TapPoint(myPage.clickPointFor(welfareNode))).getOrThrow()
-
-        val welfareCenter = waitForOcr(bridge, "福利中心", timeoutMillis = 15_000) { ocr ->
-            ocr.hasWelfareCenterMarkers()
-        } ?: return FlowExecutionResult(false, "OCR 未确认进入福利中心：未同时识别到“本周收益 / 积分商城 / 完成任务得奖励”")
+        val welfareCenter = tapWelfareCenterWithRetry(myPage, bridge, executor)
+            ?: return FlowExecutionResult(false, "连续点击“福利中心”$MAX_CLICK_ATTEMPTS 次后仍未进入福利中心界面")
 
         val markerCount = WELFARE_CENTER_MARKERS.count { marker ->
             welfareCenter.ocr.hasText(marker)
@@ -164,6 +153,84 @@ class QidianPartialCheckInFlow(
         return FlowExecutionResult(false, "起点部分流程通过 run() 执行")
     }
 
+    private suspend fun tapMeTabWithRetry(
+        initialHome: UiTreeSnapshot,
+        bridge: AccessibilityBridge,
+        executor: ActionExecutor
+    ): UiTreeSnapshot? {
+        var tabTree: UiTreeSnapshot? = initialHome
+        for (attempt in 1..MAX_CLICK_ATTEMPTS) {
+            val activeTabTree = tabTree ?: waitForTree(bridge, "起点首页底部 tab", timeoutMillis = SHORT_VERIFY_TIMEOUT_MILLIS) { tree ->
+                tree.packageName == AppConstants.QIDIAN_PACKAGE && tree.hasBottomTabs()
+            }
+            val meNode = activeTabTree?.findNode(text = "我", viewId = TAB_TITLE_ID)
+            if (activeTabTree == null || meNode == null) {
+                AppLogStore.add("第 $attempt/$MAX_CLICK_ATTEMPTS 次点击“我”前未找到底部 tab")
+                delay(RETRY_DELAY_MILLIS)
+                tabTree = null
+                continue
+            }
+
+            AppLogStore.add("点击“我”（$attempt/$MAX_CLICK_ATTEMPTS）")
+            executor.execute(AutomationAction.TapPoint(activeTabTree.clickPointFor(meNode))).getOrThrow()
+
+            val myPage = waitForTree(bridge, "我的界面", timeoutMillis = NAVIGATION_VERIFY_TIMEOUT_MILLIS) { tree ->
+                tree.isMyPageCandidate()
+            }
+            if (myPage != null) {
+                return myPage
+            }
+
+            if (attempt < MAX_CLICK_ATTEMPTS) {
+                AppLogStore.add("点击“我”后未进入我的界面，等待后重试")
+                delay(RETRY_DELAY_MILLIS)
+                tabTree = waitForTree(bridge, "起点首页底部 tab", timeoutMillis = SHORT_VERIFY_TIMEOUT_MILLIS) { tree ->
+                    tree.packageName == AppConstants.QIDIAN_PACKAGE && tree.hasBottomTabs()
+                }
+            }
+        }
+        return null
+    }
+
+    private suspend fun tapWelfareCenterWithRetry(
+        initialMyPage: UiTreeSnapshot,
+        bridge: AccessibilityBridge,
+        executor: ActionExecutor
+    ): OcrScreen? {
+        var myPage: UiTreeSnapshot? = initialMyPage
+        for (attempt in 1..MAX_CLICK_ATTEMPTS) {
+            val activeMyPage = myPage ?: waitForTree(bridge, "我的界面", timeoutMillis = SHORT_VERIFY_TIMEOUT_MILLIS) { tree ->
+                tree.isMyPageCandidate()
+            }
+            val welfareNode = activeMyPage?.findNode(text = "福利中心", viewId = WELFARE_TITLE_ID)
+            if (activeMyPage == null || welfareNode == null) {
+                AppLogStore.add("第 $attempt/$MAX_CLICK_ATTEMPTS 次点击“福利中心”前未找到入口")
+                delay(RETRY_DELAY_MILLIS)
+                myPage = null
+                continue
+            }
+
+            AppLogStore.add("点击“福利中心”（$attempt/$MAX_CLICK_ATTEMPTS）")
+            executor.execute(AutomationAction.TapPoint(activeMyPage.clickPointFor(welfareNode))).getOrThrow()
+
+            val welfareCenter = waitForOcr(bridge, "福利中心", timeoutMillis = WELFARE_VERIFY_TIMEOUT_MILLIS) { ocr ->
+                ocr.hasWelfareCenterMarkers()
+            }
+            if (welfareCenter != null) {
+                return welfareCenter
+            }
+
+            if (attempt < MAX_CLICK_ATTEMPTS) {
+                AppLogStore.add("点击“福利中心”后未进入福利中心界面，等待后重试")
+                delay(RETRY_DELAY_MILLIS)
+                myPage = waitForTree(bridge, "我的界面", timeoutMillis = SHORT_VERIFY_TIMEOUT_MILLIS) { tree ->
+                    tree.isMyPageCandidate()
+                }
+            }
+        }
+        return null
+    }
+
     private suspend fun completeWelfareAdTask(
         task: WelfareAdTask,
         bridge: AccessibilityBridge,
@@ -184,9 +251,7 @@ class QidianPartialCheckInFlow(
 
                 action.actionText in GO_COMPLETE_TEXTS -> {
                     round += 1
-                    AppLogStore.add("福利任务“${task.title}”：第 $round 轮点击“去完成”")
-                    executor.execute(AutomationAction.TapPoint(action.point)).getOrThrow()
-                    val adResult = completeAdRewardRound(task, round, bridge, executor)
+                    val adResult = completeAdRewardRound(task, round, action, bridge, executor)
                     if (!adResult.completed) {
                         return adResult
                     }
@@ -228,13 +293,14 @@ class QidianPartialCheckInFlow(
     private suspend fun completeAdRewardRound(
         task: WelfareAdTask,
         round: Int,
+        initialAction: OcrActionTextMatch,
         bridge: AccessibilityBridge,
         executor: ActionExecutor
     ): FlowExecutionResult {
-        AppLogStore.add("步骤 8：等待广告页加载并寻找右上角关闭按钮")
-        delay(2_000)
-        tapCloseButtonOrFail(bridge, executor, "广告奖励选择前")
+        AppLogStore.add("步骤 8：点击“去完成”并验证广告界面")
+        val initialCloseMatch = tapGoCompleteAndWaitForAd(task, round, initialAction, bridge, executor)
             ?: return FlowExecutionResult(false, "“${task.title}”第 $round 轮未识别到广告页右上角关闭按钮")
+        tapDetectedCloseButton(initialCloseMatch, executor, "广告奖励选择前")
 
         AppLogStore.add("步骤 9：等待“点击去浏览 / 放弃奖励”弹窗")
         val browseDialog = waitForOcr(bridge, "点击去浏览弹窗", timeoutMillis = 10_000) { ocr ->
@@ -276,18 +342,59 @@ class QidianPartialCheckInFlow(
         return FlowExecutionResult(true, "“${task.title}”第 $round 轮广告奖励已处理")
     }
 
+    private suspend fun tapGoCompleteAndWaitForAd(
+        task: WelfareAdTask,
+        round: Int,
+        initialAction: OcrActionTextMatch,
+        bridge: AccessibilityBridge,
+        executor: ActionExecutor
+    ): CloseButtonMatch? {
+        var action = initialAction
+        for (attempt in 1..MAX_CLICK_ATTEMPTS) {
+            AppLogStore.add("福利任务“${task.title}”：第 $round 轮点击“去完成”（$attempt/$MAX_CLICK_ATTEMPTS）")
+            executor.execute(AutomationAction.TapPoint(action.point)).getOrThrow()
+
+            val closeMatch = waitForCloseButton(bridge, timeoutMillis = AD_ENTRY_VERIFY_TIMEOUT_MILLIS)
+            if (closeMatch != null) {
+                AppLogStore.add("已通过右上角关闭按钮确认进入广告界面")
+                return closeMatch
+            }
+
+            if (attempt < MAX_CLICK_ATTEMPTS) {
+                AppLogStore.add("点击“去完成”后未检测到广告关闭按钮，等待后重试")
+                delay(RETRY_DELAY_MILLIS)
+                val refreshedAction = findTaskActionOnCurrentScreen(task, bridge)
+                if (refreshedAction != null && refreshedAction.actionText in GO_COMPLETE_TEXTS) {
+                    action = refreshedAction
+                } else {
+                    AppLogStore.add("未重新定位到“去完成”，停止使用旧坐标重试")
+                    return null
+                }
+            }
+        }
+        return null
+    }
+
     private suspend fun tapCloseButtonOrFail(
         bridge: AccessibilityBridge,
         executor: ActionExecutor,
         phase: String
     ): CloseButtonMatch? {
         val closeMatch = waitForCloseButton(bridge, timeoutMillis = 8_000) ?: return null
+        tapDetectedCloseButton(closeMatch, executor, phase)
+        return closeMatch
+    }
+
+    private suspend fun tapDetectedCloseButton(
+        closeMatch: CloseButtonMatch,
+        executor: ActionExecutor,
+        phase: String
+    ) {
         executor.execute(AutomationAction.TapPoint(closeMatch.point)).getOrThrow()
         AppLogStore.add(
             "已点击右上角关闭按钮（$phase）：${closeMatch.templateName}，分数 ${"%.3f".format(closeMatch.score)}"
         )
         delay(700)
-        return closeMatch
     }
 
     private suspend fun waitForTree(
@@ -376,6 +483,11 @@ class QidianPartialCheckInFlow(
             hasNode("登录解锁更多精彩功能", NEW_USER_TAG_ID)
     }
 
+    private fun UiTreeSnapshot.isMyPageCandidate(): Boolean {
+        return packageName == AppConstants.QIDIAN_PACKAGE &&
+            (isLoggedOutMyPage() || findNode(text = "福利中心", viewId = WELFARE_TITLE_ID) != null)
+    }
+
     private fun UiTreeSnapshot.hasWelfareCenterMarkers(): Boolean {
         return hasAllTexts(WELFARE_CENTER_MARKERS)
     }
@@ -404,6 +516,12 @@ class QidianPartialCheckInFlow(
         private const val GO_COMPLETE_TEXT = "去完成"
         private const val COMPLETED_TEXT = "已完成"
         private const val KNOW_TEXT = "知道了"
+        private const val MAX_CLICK_ATTEMPTS = 3
+        private const val SHORT_VERIFY_TIMEOUT_MILLIS = 2_000L
+        private const val NAVIGATION_VERIFY_TIMEOUT_MILLIS = 4_000L
+        private const val WELFARE_VERIFY_TIMEOUT_MILLIS = 6_000L
+        private const val AD_ENTRY_VERIFY_TIMEOUT_MILLIS = 6_000L
+        private const val RETRY_DELAY_MILLIS = 1_000L
 
         private val BOTTOM_TABS = listOf("书架", "精选", "发现", "我")
         private val WELFARE_CENTER_MARKERS = listOf("本周收益", "积分商城", "完成任务得奖励")
