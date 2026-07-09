@@ -1,6 +1,7 @@
 package today.qdreader.auto.automation
 
 import android.graphics.Bitmap
+import android.graphics.Rect
 import kotlinx.coroutines.delay
 import today.qdreader.auto.accessibility.ScreenPoint
 import today.qdreader.auto.accessibility.AccessibilityBridge
@@ -20,6 +21,7 @@ import today.qdreader.auto.vision.findAnyTextCenter
 import today.qdreader.auto.vision.findBlocksContaining
 import today.qdreader.auto.vision.hasText
 import today.qdreader.auto.vision.hasAnyText
+import kotlin.math.abs
 
 sealed interface CheckInStep {
     data object FrameworkOnly : CheckInStep
@@ -251,7 +253,7 @@ class QidianPartialCheckInFlow(
                     return FlowExecutionResult(true, "福利任务“${task.title}”已领取")
                 }
 
-                action.actionText in GO_COMPLETE_TEXTS -> {
+                action.isGoComplete() -> {
                     round += 1
                     AppLogStore.add("福利任务“${task.title}”当前仍是“去完成”，继续执行第 $round 轮")
                     val adResult = completeAdRewardRound(task, round, action, bridge, executor)
@@ -273,6 +275,7 @@ class QidianPartialCheckInFlow(
         repeat(TASK_STATUS_POLL_ATTEMPTS) { index ->
             val screen = captureOcrScreen(bridge).getOrNull()
             val action = screen?.ocr?.findActionAfterAnyText(task.matchTexts, TASK_ACTION_TEXTS)
+                ?: screen?.findTaskActionByRowFallback(task)
             if (action != null) {
                 AppLogStore.add("OCR 已定位“${task.title}”状态：${action.actionText}")
                 return action
@@ -445,7 +448,7 @@ class QidianPartialCheckInFlow(
             AppLogStore.add("点击“去完成”后未检测到广告关闭按钮，等待后重新确认任务状态")
             delay(RETRY_DELAY_MILLIS)
             val refreshedAction = findTaskActionOnCurrentScreen(task, bridge)
-            if (refreshedAction != null && refreshedAction.actionText in GO_COMPLETE_TEXTS) {
+            if (refreshedAction != null && refreshedAction.isGoComplete()) {
                 AppLogStore.add("任务状态仍是“去完成”，继续点击，不按点击次数触发重启")
                 action = refreshedAction
             } else {
@@ -671,6 +674,10 @@ class QidianPartialCheckInFlow(
             hasAnyText(AD_CLOSE_FALLBACK_CONTEXT_TEXTS)
     }
 
+    private fun OcrActionTextMatch.isGoComplete(): Boolean {
+        return actionText in GO_COMPLETE_TEXTS || actionText == INFERRED_GO_COMPLETE_TEXT
+    }
+
     private fun restartableFailure(message: String): FlowExecutionResult {
         return FlowExecutionResult(
             completed = false,
@@ -698,6 +705,91 @@ class QidianPartialCheckInFlow(
         val inferredActionX = if (giveUpPoint.x < width * 0.5f) width * 0.72f else width * 0.28f
         AppLogStore.add("仅识别到“放弃奖励”，按同一行另一侧推断“点击去浏览”坐标")
         return ScreenPoint(inferredActionX, giveUpPoint.y)
+    }
+
+    private fun OcrScreen.findTaskActionByRowFallback(task: WelfareAdTask): OcrActionTextMatch? {
+        val anchor = findTaskAnchorBounds(task) ?: return null
+        val doneAction = findNearestTaskAction(anchor, TASK_DONE_TEXTS)
+        if (doneAction != null) {
+            AppLogStore.add("OCR 行兜底匹配到“${task.title}”已领取状态")
+            return doneAction
+        }
+
+        val goAction = findNearestTaskAction(anchor, GO_COMPLETE_TEXTS)
+        if (goAction != null) {
+            AppLogStore.add("OCR 行兜底匹配到“${task.title}”去完成按钮")
+            return goAction
+        }
+
+        val inferredBounds = inferredTaskButtonBounds(anchor)
+        AppLogStore.add("OCR 找到“${task.title}”标题但未读到右侧按钮，按同一行右侧推断“去完成”坐标")
+        return OcrActionTextMatch(
+            actionText = INFERRED_GO_COMPLETE_TEXT,
+            point = ScreenPoint(inferredBounds.exactCenterX(), inferredBounds.exactCenterY()),
+            bounds = inferredBounds
+        )
+    }
+
+    private fun OcrScreen.findTaskAnchorBounds(task: WelfareAdTask): Rect? {
+        val minY = height * TASK_ROW_MIN_Y_FRACTION
+        val maxY = height * TASK_ROW_MAX_Y_FRACTION
+        task.rowAnchorTexts.forEach { anchorText ->
+            val match = ocr.findBlocksContaining(anchorText)
+                .mapNotNull { block -> block.bounds }
+                .filter { bounds ->
+                    bounds.exactCenterY() in minY..maxY
+                }
+                .minByOrNull { bounds -> bounds.top * width + bounds.left }
+            if (match != null) return match
+        }
+        return null
+    }
+
+    private fun OcrScreen.findNearestTaskAction(
+        anchor: Rect,
+        actionTexts: List<String>
+    ): OcrActionTextMatch? {
+        return actionTexts
+            .flatMap { actionText ->
+                ocr.findBlocksContaining(actionText).mapNotNull { block ->
+                    block.bounds?.let { bounds -> actionText to bounds }
+                }
+            }
+            .filter { (_, bounds) -> bounds.isLikelySameVisibleTaskRow(anchor, width) }
+            .minByOrNull { (_, bounds) ->
+                abs(bounds.exactCenterY() - anchor.exactCenterY()) * 4 +
+                    abs(bounds.exactCenterX() - expectedTaskButtonCenterX())
+            }
+            ?.let { (actionText, bounds) ->
+                OcrActionTextMatch(
+                    actionText = actionText,
+                    point = ScreenPoint(bounds.exactCenterX(), bounds.exactCenterY()),
+                    bounds = bounds
+                )
+            }
+    }
+
+    private fun Rect.isLikelySameVisibleTaskRow(anchor: Rect, screenWidth: Int): Boolean {
+        val verticalTolerance = minOf(72f, maxOf(48f, anchor.height() * 1.2f))
+        val isRightButtonArea = exactCenterX() >= screenWidth * TASK_BUTTON_MIN_X_FRACTION
+        return isRightButtonArea && abs(exactCenterY() - anchor.exactCenterY()) <= verticalTolerance
+    }
+
+    private fun OcrScreen.inferredTaskButtonBounds(anchor: Rect): Rect {
+        val centerX = expectedTaskButtonCenterX()
+        val centerY = anchor.exactCenterY()
+        val halfWidth = width * 0.095f
+        val halfHeight = maxOf(26f, anchor.height() * 0.9f)
+        return Rect(
+            (centerX - halfWidth).toInt(),
+            (centerY - halfHeight).toInt(),
+            (centerX + halfWidth).toInt(),
+            (centerY + halfHeight).toInt()
+        )
+    }
+
+    private fun OcrScreen.expectedTaskButtonCenterX(): Float {
+        return width * 0.87f
     }
 
     private fun OcrScreen.inferRewardConfirmButtonPoint(): ScreenPoint {
@@ -734,6 +826,7 @@ class QidianPartialCheckInFlow(
         private const val THREE_AD_TASK_TEXT = "完成3个广告任务得奖励"
         private const val ONE_AD_TASK_TEXT = "完成1个广告任务得奖励"
         private const val GO_COMPLETE_TEXT = "去完成"
+        private const val INFERRED_GO_COMPLETE_TEXT = "去完成(行兜底)"
         private const val CLAIMED_TEXT = "已领取"
         private const val COMPLETED_TEXT = "已完成"
         private const val KNOW_TEXT = "知道了"
@@ -747,6 +840,9 @@ class QidianPartialCheckInFlow(
         private const val MY_PAGE_READY_DELAY_MILLIS = 2_000L
         private const val RETRY_DELAY_MILLIS = 1_000L
         private const val AD_OCR_CLOSE_FALLBACK_SCORE = 0.52
+        private const val TASK_ROW_MIN_Y_FRACTION = 0.12f
+        private const val TASK_ROW_MAX_Y_FRACTION = 0.96f
+        private const val TASK_BUTTON_MIN_X_FRACTION = 0.64f
 
         private val BOTTOM_TABS = listOf("书架", "精选", "发现", "我")
         private const val WELFARE_CENTER_TITLE_MARKER = "福利中心"
@@ -810,15 +906,18 @@ class QidianPartialCheckInFlow(
         private val WELFARE_AD_TASKS = listOf(
             WelfareAdTask(
                 title = INCENTIVE_TASK_TEXT,
-                matchTexts = listOf(INCENTIVE_TASK_TEXT, "激励", "完成广告任务", "多重好礼")
+                matchTexts = listOf(INCENTIVE_TASK_TEXT, "激励", "完成广告任务", "多重好礼"),
+                rowAnchorTexts = listOf(INCENTIVE_TASK_TEXT, "激励任务", "激励")
             ),
             WelfareAdTask(
                 title = THREE_AD_TASK_TEXT,
-                matchTexts = listOf(THREE_AD_TASK_TEXT, "完成3个广告", "再完成3次", "10点章节卡")
+                matchTexts = listOf(THREE_AD_TASK_TEXT, "完成3个广告", "再完成3次", "10点章节卡"),
+                rowAnchorTexts = listOf(THREE_AD_TASK_TEXT, "完成3个广告")
             ),
             WelfareAdTask(
                 title = ONE_AD_TASK_TEXT,
-                matchTexts = listOf(ONE_AD_TASK_TEXT, "完成1个广告", "满10点", "3点订阅券")
+                matchTexts = listOf(ONE_AD_TASK_TEXT, "完成1个广告", "满10点", "3点订阅券"),
+                rowAnchorTexts = listOf(ONE_AD_TASK_TEXT, "完成1个广告")
             )
         )
         private const val TASK_STATUS_POLL_ATTEMPTS = 4
@@ -833,7 +932,8 @@ private data class OcrScreen(
 
 private data class WelfareAdTask(
     val title: String,
-    val matchTexts: List<String>
+    val matchTexts: List<String>,
+    val rowAnchorTexts: List<String>
 )
 
 private fun OcrResult.logPreview(): String {
