@@ -8,6 +8,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -40,6 +43,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -53,8 +57,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -206,24 +210,29 @@ private fun DashboardScreen(
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text("起点自动签到", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = {
+                    Text(
+                        "起点自动签到",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background
+                    containerColor = AppBackground
                 )
             )
-        }
+        },
+        containerColor = AppBackground
     ) { padding ->
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
                 .padding(padding)
                 .padding(horizontal = 14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            item {
-                HeaderPanel(state = state)
-            }
+            item { HeaderPanel(state = state) }
             item {
                 AutomationPanel(
                     config = state.scheduleConfig,
@@ -240,15 +249,9 @@ private fun DashboardScreen(
                     onOpenTargetApp = onOpenTargetApp
                 )
             }
-            item {
-                LogsPanel(logs = logs, onClearLogs = onClearLogs)
-            }
-            item {
-                StatusPanel(state = state, onRefresh = onRefresh)
-            }
-            item {
-                Spacer(modifier = Modifier.height(16.dp))
-            }
+            item { LogsPanel(logs = logs, onClearLogs = onClearLogs) }
+            item { StatusPanel(state = state, onRefresh = onRefresh) }
+            item { Spacer(modifier = Modifier.height(16.dp)) }
         }
     }
 }
@@ -256,23 +259,37 @@ private fun DashboardScreen(
 @Composable
 private fun SectionCard(
     title: String,
+    action: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, BorderColor, RoundedCornerShape(8.dp))
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = TextPrimary
+                )
+                if (action != null) {
+                    action()
+                }
+            }
             content()
         }
     }
@@ -280,62 +297,76 @@ private fun SectionCard(
 
 @Composable
 private fun HeaderPanel(state: DashboardState) {
+    val ready = state.accessibilityEnabled && state.serviceConnected && state.targetInstalled
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBFA)),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .border(1.dp, BorderColor, RoundedCornerShape(8.dp))
                 .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            BookLogo()
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "起点自动签到",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = if (state.accessibilityEnabled && state.serviceConnected) {
-                        "自动任务服务已连接"
-                    } else {
-                        "开启权限后可运行自动任务"
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.secondary
-                )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                BookLogo(modifier = Modifier.size(44.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "起点自动签到",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary
+                    )
+                    Text(
+                        text = if (ready) "服务已连接，可以运行自动任务" else "完成权限后再运行自动任务",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                ReadinessPill(label = if (ready) "就绪" else "待处理", ok = ready)
             }
-            ReadinessPill(
-                label = if (state.accessibilityEnabled && state.serviceConnected) "就绪" else "待授权",
-                ok = state.accessibilityEnabled && state.serviceConnected
-            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                StatusMetric("无障碍", state.accessibilityEnabled, Modifier.weight(1f))
+                StatusMetric("服务", state.serviceConnected, Modifier.weight(1f))
+                StatusMetric("起点", state.targetInstalled, Modifier.weight(1f))
+            }
         }
     }
 }
 
 @Composable
-private fun BookLogo() {
+private fun BookLogo(modifier: Modifier = Modifier) {
     Box(
-        modifier = Modifier
-            .size(46.dp)
-            .background(Color(0xFFDC2626), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-            .padding(9.dp)
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(PrimaryRed)
+            .padding(10.dp)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.White.copy(alpha = 0.96f), androidx.compose.foundation.shape.RoundedCornerShape(3.dp))
+                .clip(RoundedCornerShape(3.dp))
+                .background(Color.White)
         )
         Box(
             modifier = Modifier
-                .width(5.dp)
+                .width(4.dp)
                 .fillMaxSize()
-                .background(Color(0xFF991B1B), androidx.compose.foundation.shape.RoundedCornerShape(2.dp))
+                .clip(RoundedCornerShape(2.dp))
+                .background(DarkRed)
         )
         Column(
             modifier = Modifier
@@ -347,13 +378,15 @@ private fun BookLogo() {
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(2.dp)
-                    .background(Color(0xFFDC2626), androidx.compose.foundation.shape.RoundedCornerShape(1.dp))
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(PrimaryRed)
             )
             Box(
                 modifier = Modifier
-                    .fillMaxWidth(0.72f)
+                    .fillMaxWidth(0.68f)
                     .height(2.dp)
-                    .background(Color(0xFFDC2626), androidx.compose.foundation.shape.RoundedCornerShape(1.dp))
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(PrimaryRed)
             )
         }
     }
@@ -374,46 +407,45 @@ private fun AutomationPanel(
     SectionCard(title = "自动任务") {
         Button(
             onClick = onRunAutomation,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            shape = RoundedCornerShape(8.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = PrimaryRed)
         ) {
-            Icon(Icons.Filled.PlayArrow, contentDescription = null)
+            Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(modifier = Modifier.width(8.dp))
-            Text("运行自动签到")
+            Text("运行自动签到", fontWeight = FontWeight.SemiBold)
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Schedule, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("每日自动运行")
-            }
-            Switch(checked = enabled, onCheckedChange = { enabled = it })
-        }
+        SettingLine(
+            icon = { Icon(Icons.Filled.Schedule, contentDescription = null, tint = TextSecondary) },
+            title = "每日自动运行",
+            value = config.label(),
+            trailing = { Switch(checked = enabled, onCheckedChange = { enabled = it }) }
+        )
 
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            OutlinedTextField(
+            CompactNumberField(
                 value = hourText,
                 onValueChange = { hourText = it.filter(Char::isDigit).take(2) },
-                label = { Text("时") },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                label = "时",
+                modifier = Modifier.weight(1f)
             )
-            OutlinedTextField(
+            CompactNumberField(
                 value = minuteText,
                 onValueChange = { minuteText = it.filter(Char::isDigit).take(2) },
-                label = { Text("分") },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                label = "分",
+                modifier = Modifier.weight(1f)
+            )
+            CompactNumberField(
+                value = maxRestartText,
+                onValueChange = { maxRestartText = it.filter(Char::isDigit).take(2) },
+                label = "重启",
+                modifier = Modifier.weight(1f)
             )
             OutlinedButton(
                 onClick = {
@@ -430,45 +462,29 @@ private fun AutomationPanel(
                 },
                 modifier = Modifier
                     .weight(1f)
-                    .height(56.dp)
+                    .height(52.dp),
+                shape = RoundedCornerShape(8.dp)
             ) {
                 Text("保存")
             }
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = maxRestartText,
-                onValueChange = { maxRestartText = it.filter(Char::isDigit).take(2) },
-                label = { Text("失败重启") },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-            )
-            Text(
-                text = "步骤卡住后最多重启 ${maxRestartText.toIntOrNull()?.coerceIn(0, ScheduleRepository.MAX_RESTART_COUNT) ?: ScheduleRepository.DEFAULT_MAX_RESTART_COUNT} 次",
-                modifier = Modifier.weight(2f),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
+        Text(
+            text = "步骤卡住后最多重启 ${maxRestartText.toIntOrNull()?.coerceIn(0, ScheduleRepository.MAX_RESTART_COUNT) ?: ScheduleRepository.DEFAULT_MAX_RESTART_COUNT} 次",
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary
+        )
 
         SelectionContainer {
             Text(
                 text = runOutput,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(
-                        Color(0xFFFFF1F2),
-                        androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
-                    )
-                    .padding(10.dp),
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFFFFF5F5))
+                    .padding(horizontal = 10.dp, vertical = 9.dp),
                 style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFF7F1D1D)
+                color = DarkRed
             )
         }
     }
@@ -486,87 +502,46 @@ private fun PermissionPanel(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            CompactStatus("无障碍", state.accessibilityEnabled, Modifier.weight(1f))
-            CompactStatus("通知", state.notificationGranted, Modifier.weight(1f))
-            CompactStatus("起点", state.targetInstalled, Modifier.weight(1f))
+            PermissionButton("无障碍", state.accessibilityEnabled, Icons.Filled.Settings, onOpenAccessibility, Modifier.weight(1f))
+            PermissionButton("通知", state.notificationGranted, Icons.Filled.Notifications, onRequestNotification, Modifier.weight(1f))
+            PermissionButton("起点", state.targetInstalled, Icons.Filled.PlayArrow, onOpenTargetApp, Modifier.weight(1f))
         }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedButton(onClick = onOpenAccessibility, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("无障碍")
-            }
-            OutlinedButton(onClick = onRequestNotification, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.Notifications, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("通知")
-            }
-            OutlinedButton(onClick = onOpenTargetApp, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("起点")
-            }
-        }
-    }
-}
-
-@Composable
-private fun CompactStatus(label: String, ok: Boolean, modifier: Modifier = Modifier) {
-    Row(
-        modifier = modifier
-            .background(
-                color = if (ok) Color(0xFFEFFDF5) else Color(0xFFFFF1F2),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
-            )
-            .padding(horizontal = 8.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .background(
-                    color = if (ok) Color(0xFF16A34A) else Color(0xFFDC2626),
-                    shape = androidx.compose.foundation.shape.CircleShape
-                )
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
     }
 }
 
 @Composable
 private fun LogsPanel(logs: List<AppLogEntry>, onClearLogs: () -> Unit) {
-    SectionCard(title = "日志") {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End
-        ) {
+    SectionCard(
+        title = "日志",
+        action = {
             OutlinedButton(
                 onClick = onClearLogs,
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.secondary)
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary)
             ) {
                 Icon(Icons.Filled.Clear, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text("清空")
             }
         }
+    ) {
         if (logs.isEmpty()) {
-            Text("暂无日志", color = MaterialTheme.colorScheme.secondary)
+            Text("暂无日志", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
         } else {
             SelectionContainer {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    logs.take(24).forEach { entry ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFFF8FAFC))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    logs.take(28).forEach { entry ->
                         Text(
                             text = "${entry.timestamp}  ${entry.message}",
                             style = MaterialTheme.typography.bodySmall,
+                            color = TextPrimary,
                             fontFamily = FontFamily.Monospace
                         )
                     }
@@ -579,16 +554,20 @@ private fun LogsPanel(logs: List<AppLogEntry>, onClearLogs: () -> Unit) {
 @Composable
 private fun StatusPanel(state: DashboardState, onRefresh: () -> Unit) {
     SectionCard(title = "状态") {
-        StatusRow("无障碍授权", state.accessibilityEnabled)
-        StatusRow("服务连接", state.serviceConnected)
-        StatusRow("通知权限", state.notificationGranted)
-        StatusRow("起点读书", state.targetInstalled)
+        StatusLine("无障碍授权", state.accessibilityEnabled)
+        StatusLine("服务连接", state.serviceConnected)
+        StatusLine("通知权限", state.notificationGranted)
+        StatusLine("起点读书", state.targetInstalled)
         Text(
             text = "当前窗口：${state.currentPackageName ?: "未知"}",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.secondary
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary
         )
-        OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(
+            onClick = onRefresh,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp)
+        ) {
             Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(6.dp))
             Text("刷新状态")
@@ -597,32 +576,145 @@ private fun StatusPanel(state: DashboardState, onRefresh: () -> Unit) {
 }
 
 @Composable
-private fun StatusRow(label: String, ok: Boolean) {
+private fun SettingLine(
+    icon: @Composable () -> Unit,
+    title: String,
+    value: String,
+    trailing: @Composable () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xFFF8FAFC))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        icon()
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+            Text(value, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+        }
+        trailing()
+    }
+}
+
+@Composable
+private fun CompactNumberField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        modifier = modifier.height(56.dp),
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        shape = RoundedCornerShape(8.dp),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = PrimaryRed,
+            focusedLabelColor = PrimaryRed
+        )
+    )
+}
+
+@Composable
+private fun PermissionButton(
+    label: String,
+    ok: Boolean,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.height(66.dp),
+        shape = RoundedCornerShape(8.dp),
+        colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = if (ok) Color(0xFFF0FDF4) else Color.White,
+            contentColor = if (ok) Green else TextSecondary
+        )
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(19.dp))
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+private fun StatusMetric(label: String, ok: Boolean, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (ok) Color(0xFFF0FDF4) else Color(0xFFFEF2F2))
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Dot(ok)
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (ok) Green else ErrorRed,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun StatusLine(label: String, ok: Boolean) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
         ReadinessPill(label = if (ok) "已就绪" else "未就绪", ok = ok)
     }
 }
 
 @Composable
 private fun ReadinessPill(label: String, ok: Boolean) {
-    Box(
+    Row(
         modifier = Modifier
-            .background(
-                color = if (ok) Color(0xFFEFFDF5) else Color(0xFFFFF1F2),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
-            )
-            .padding(horizontal = 10.dp, vertical = 5.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (ok) Color(0xFFEFFDF5) else Color(0xFFFFF1F2))
+            .padding(horizontal = 9.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
+        Dot(ok)
         Text(
             text = label,
-            color = if (ok) Color(0xFF15803D) else Color(0xFFBE123C),
+            color = if (ok) Green else ErrorRed,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Medium
         )
     }
 }
+
+@Composable
+private fun Dot(ok: Boolean) {
+    Box(
+        modifier = Modifier
+            .size(7.dp)
+            .clip(CircleShape)
+            .background(if (ok) Green else ErrorRed)
+    )
+}
+
+private val AppBackground = Color(0xFFF6F7F9)
+private val BorderColor = Color(0xFFE5E7EB)
+private val PrimaryRed = Color(0xFFE92F2A)
+private val DarkRed = Color(0xFFB91C1C)
+private val ErrorRed = Color(0xFFBE123C)
+private val Green = Color(0xFF16A34A)
+private val TextPrimary = Color(0xFF111827)
+private val TextSecondary = Color(0xFF6B7280)
