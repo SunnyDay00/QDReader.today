@@ -146,7 +146,10 @@ class MainActivity : ComponentActivity() {
                     onRunAutomation = {
                         scope.launch {
                             runOutput = "自动任务运行中..."
-                            val result = AutomationController(activity).run(AutomationTrigger.Manual)
+                            val result = AutomationController(activity).run(
+                                AutomationTrigger.Manual,
+                                maxRestartCount = dashboardState.scheduleConfig.maxRestartCount
+                            )
                             runOutput = result.message
                             AppNotifier.showStatus(
                                 activity,
@@ -366,6 +369,7 @@ private fun AutomationPanel(
     var enabled by remember(config) { mutableStateOf(config.enabled) }
     var hourText by remember(config) { mutableStateOf("%02d".format(config.hour)) }
     var minuteText by remember(config) { mutableStateOf("%02d".format(config.minute)) }
+    var maxRestartText by remember(config) { mutableStateOf(config.maxRestartCount.toString()) }
 
     SectionCard(title = "自动任务") {
         Button(
@@ -417,7 +421,10 @@ private fun AutomationPanel(
                         ScheduleConfig(
                             enabled = enabled,
                             hour = hourText.toIntOrNull()?.coerceIn(0, 23) ?: 9,
-                            minute = minuteText.toIntOrNull()?.coerceIn(0, 59) ?: 0
+                            minute = minuteText.toIntOrNull()?.coerceIn(0, 59) ?: 0,
+                            maxRestartCount = maxRestartText.toIntOrNull()
+                                ?.coerceIn(0, ScheduleRepository.MAX_RESTART_COUNT)
+                                ?: ScheduleRepository.DEFAULT_MAX_RESTART_COUNT
                         )
                     )
                 },
@@ -427,6 +434,27 @@ private fun AutomationPanel(
             ) {
                 Text("保存")
             }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = maxRestartText,
+                onValueChange = { maxRestartText = it.filter(Char::isDigit).take(2) },
+                label = { Text("失败重启") },
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+            Text(
+                text = "步骤卡住后最多重启 ${maxRestartText.toIntOrNull()?.coerceIn(0, ScheduleRepository.MAX_RESTART_COUNT) ?: ScheduleRepository.DEFAULT_MAX_RESTART_COUNT} 次",
+                modifier = Modifier.weight(2f),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         SelectionContainer {

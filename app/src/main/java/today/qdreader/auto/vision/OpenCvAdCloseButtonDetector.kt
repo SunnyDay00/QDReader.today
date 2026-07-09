@@ -13,6 +13,7 @@ import org.opencv.core.Mat
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
 import today.qdreader.auto.accessibility.ScreenPoint
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class OpenCvAdCloseButtonDetector(
@@ -49,8 +50,12 @@ class OpenCvAdCloseButtonDetector(
                             BitmapFactory.decodeStream(stream)
                         }?.let { template -> matchTemplate(roiGray, roiEdges, roi, template, templateName) }
                     }
-                    .filter { it.score >= threshold }
-                    .maxWithOrNull(compareBy<CloseButtonMatch> { it.score }.thenBy { it.bounds.centerX() })
+                    .filter { match -> isTemplateMatchAccepted(match, bitmap.width, bitmap.height, threshold) }
+                    .maxWithOrNull(
+                        compareBy<CloseButtonMatch> { match ->
+                            scoreTemplateMatch(match, bitmap.width, bitmap.height)
+                        }.thenBy { it.bounds.centerX() }
+                    )
 
                 templateMatch ?: detectGeometricCloseButton(roiGray, roi, bitmap.width)
             } finally {
@@ -114,11 +119,55 @@ class OpenCvAdCloseButtonDetector(
         }
     }
 
+    private fun isTemplateMatchAccepted(
+        match: CloseButtonMatch,
+        screenWidth: Int,
+        screenHeight: Int,
+        threshold: Double
+    ): Boolean {
+        if (match.score >= threshold) return true
+        return match.score >= RELAXED_TOP_RIGHT_TEMPLATE_THRESHOLD &&
+            isExpectedCloseButtonRegion(match.bounds, screenWidth, screenHeight)
+    }
+
+    private fun scoreTemplateMatch(
+        match: CloseButtonMatch,
+        screenWidth: Int,
+        screenHeight: Int
+    ): Double {
+        val regionBonus = if (isExpectedCloseButtonRegion(match.bounds, screenWidth, screenHeight)) 0.08 else 0.0
+        return match.score + regionBonus
+    }
+
     private fun detectGeometricCloseButton(
         roiGray: Mat,
         roi: Rect,
         screenWidth: Int
     ): CloseButtonMatch? {
+        val normalized = Mat()
+        return try {
+            Imgproc.GaussianBlur(roiGray, normalized, Size(3.0, 3.0), 0.0)
+            val matches = GEOMETRIC_PARAM2_VALUES.flatMap { param2 ->
+                detectGeometricCandidates(roiGray, roi, screenWidth, param2, "geometric_top_right_circle")
+            } + GEOMETRIC_PARAM2_VALUES.flatMap { param2 ->
+                detectGeometricCandidates(normalized, roi, screenWidth, param2, "geometric_top_right_circle_blur")
+            }
+
+            matches
+                .distinctBy { match -> "${match.bounds.centerX() / 3}_${match.bounds.centerY() / 3}_${match.bounds.width() / 3}" }
+                .maxByOrNull { match -> scoreGeometricMatch(match, screenWidth, roi.height()) }
+        } finally {
+            normalized.release()
+        }
+    }
+
+    private fun detectGeometricCandidates(
+        roiGray: Mat,
+        roi: Rect,
+        screenWidth: Int,
+        param2: Double,
+        templateName: String
+    ): List<CloseButtonMatch> {
         val circles = Mat()
         return try {
             Imgproc.HoughCircles(
@@ -126,41 +175,82 @@ class OpenCvAdCloseButtonDetector(
                 circles,
                 Imgproc.HOUGH_GRADIENT,
                 1.2,
-                28.0,
+                26.0,
                 120.0,
-                18.0,
+                param2,
                 MIN_GEOMETRIC_RADIUS,
                 MAX_GEOMETRIC_RADIUS
             )
 
-            val matches = (0 until circles.cols()).mapNotNull { index ->
+            (0 until circles.cols()).mapNotNull { index ->
                 val circle = circles.get(0, index) ?: return@mapNotNull null
                 if (circle.size < 3) return@mapNotNull null
 
                 val centerX = roi.left + circle[0].roundToInt()
                 val centerY = roi.top + circle[1].roundToInt()
                 val radius = circle[2].roundToInt()
-                if (centerX.toFloat() < screenWidth * GEOMETRIC_MIN_X_FRACTION) return@mapNotNull null
-                if (centerY.toFloat() > roi.height() * GEOMETRIC_MAX_Y_FRACTION) return@mapNotNull null
-
                 val bounds = Rect(
                     centerX - radius,
                     centerY - radius,
                     centerX + radius,
                     centerY + radius
                 )
+                if (!isGeometricCandidateValid(bounds, centerX, centerY, radius, screenWidth, roi.height())) {
+                    return@mapNotNull null
+                }
+
                 CloseButtonMatch(
                     point = ScreenPoint(centerX.toFloat(), centerY.toFloat()),
                     bounds = bounds,
-                    score = GEOMETRIC_FALLBACK_SCORE,
-                    templateName = "geometric_top_right_circle"
+                    score = GEOMETRIC_FALLBACK_SCORE + (GEOMETRIC_REFERENCE_PARAM2 - param2) * 0.004,
+                    templateName = "$templateName@${param2.roundToInt()}"
                 )
             }
-
-            matches.maxByOrNull { it.bounds.centerX() }
         } finally {
             circles.release()
         }
+    }
+
+    private fun isGeometricCandidateValid(
+        bounds: Rect,
+        centerX: Int,
+        centerY: Int,
+        radius: Int,
+        screenWidth: Int,
+        roiHeight: Int
+    ): Boolean {
+        if (centerX.toFloat() < screenWidth * GEOMETRIC_MIN_X_FRACTION) return false
+        if (centerY.toFloat() > roiHeight * GEOMETRIC_MAX_Y_FRACTION) return false
+        if (centerY.toFloat() < roiHeight * GEOMETRIC_MIN_Y_FRACTION) return false
+        if (bounds.right.toFloat() > screenWidth + radius * 0.25f) return false
+        if (bounds.left.toFloat() < screenWidth * GEOMETRIC_MIN_X_FRACTION - radius) return false
+        return true
+    }
+
+    private fun scoreGeometricMatch(
+        match: CloseButtonMatch,
+        screenWidth: Int,
+        roiHeight: Int
+    ): Double {
+        val centerX = match.bounds.exactCenterX()
+        val centerY = match.bounds.exactCenterY()
+        val expectedX = screenWidth * EXPECTED_CLOSE_CENTER_X_FRACTION
+        val expectedY = roiHeight * EXPECTED_CLOSE_CENTER_Y_IN_ROI_FRACTION
+        val xPenalty = abs(centerX - expectedX) / screenWidth
+        val yPenalty = abs(centerY - expectedY) / roiHeight
+        return match.score - xPenalty - yPenalty * 0.7
+    }
+
+    private fun isExpectedCloseButtonRegion(
+        bounds: Rect,
+        screenWidth: Int,
+        screenHeight: Int
+    ): Boolean {
+        val centerX = bounds.exactCenterX()
+        val centerY = bounds.exactCenterY()
+        return centerX >= screenWidth * RELAXED_TEMPLATE_MIN_X_FRACTION &&
+            centerY >= screenHeight * RELAXED_TEMPLATE_MIN_Y_FRACTION &&
+            centerY <= screenHeight * RELAXED_TEMPLATE_MAX_Y_FRACTION
     }
 
     private fun topRightRoi(width: Int, height: Int): Rect {
@@ -172,11 +262,20 @@ class OpenCvAdCloseButtonDetector(
     companion object {
         private const val TEMPLATE_DIR = "templates/ad_close"
         private const val MIN_TEMPLATE_SIZE = 18
+        private const val RELAXED_TOP_RIGHT_TEMPLATE_THRESHOLD = 0.62
+        private const val RELAXED_TEMPLATE_MIN_X_FRACTION = 0.84f
+        private const val RELAXED_TEMPLATE_MIN_Y_FRACTION = 0.04f
+        private const val RELAXED_TEMPLATE_MAX_Y_FRACTION = 0.18f
         private const val MIN_GEOMETRIC_RADIUS = 14
         private const val MAX_GEOMETRIC_RADIUS = 38
         private const val GEOMETRIC_MIN_X_FRACTION = 0.84f
+        private const val GEOMETRIC_MIN_Y_FRACTION = 0.12f
         private const val GEOMETRIC_MAX_Y_FRACTION = 0.60f
+        private const val GEOMETRIC_REFERENCE_PARAM2 = 18.0
         private const val GEOMETRIC_FALLBACK_SCORE = 0.60
+        private const val EXPECTED_CLOSE_CENTER_X_FRACTION = 0.935f
+        private const val EXPECTED_CLOSE_CENTER_Y_IN_ROI_FRACTION = 0.45f
+        private val GEOMETRIC_PARAM2_VALUES = listOf(18.0, 15.0, 12.0)
         private val TEMPLATE_SCALES = listOf(0.75, 0.9, 1.0, 1.15, 1.3)
     }
 }

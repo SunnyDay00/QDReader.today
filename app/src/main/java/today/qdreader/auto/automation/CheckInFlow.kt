@@ -32,7 +32,8 @@ sealed interface CheckInStep {
 
 data class FlowExecutionResult(
     val completed: Boolean,
-    val message: String
+    val message: String,
+    val restartRequested: Boolean = false
 )
 
 interface CheckInFlow {
@@ -87,11 +88,11 @@ class QidianPartialCheckInFlow(
 
         val home = waitForTree(bridge, "起点首页", timeoutMillis = 12_000) { tree ->
             tree.packageName == AppConstants.QIDIAN_PACKAGE && tree.hasBottomTabs()
-        } ?: return FlowExecutionResult(false, "未进入起点读书首页：未检测到底部 4 个 tab")
+        } ?: return restartableFailure("未进入起点读书首页：未检测到底部 4 个 tab")
 
         AppLogStore.add("步骤 2：已检测到底部 tab，点击“我”")
         val myPage = tapMeTabWithRetry(home, bridge, executor)
-            ?: return FlowExecutionResult(false, "连续点击“我”$MAX_CLICK_ATTEMPTS 次后仍未进入我的界面")
+            ?: return restartableFailure("连续点击“我”$MAX_CLICK_ATTEMPTS 次后仍未进入我的界面")
 
         AppLogStore.add("步骤 3：检查登录状态")
         if (myPage.isLoggedOutMyPage()) {
@@ -104,7 +105,7 @@ class QidianPartialCheckInFlow(
 
         AppLogStore.add("步骤 4：点击“福利中心”")
         val welfareCenter = tapWelfareCenterWithRetry(myPage, bridge, executor)
-            ?: return FlowExecutionResult(false, "连续点击“福利中心”$MAX_CLICK_ATTEMPTS 次后仍未进入福利中心界面")
+            ?: return restartableFailure("连续点击“福利中心”$MAX_CLICK_ATTEMPTS 次后仍未进入福利中心界面")
 
         AppLogStore.add("步骤 5：OCR 已确认福利中心，命中：${welfareCenter.ocr.welfareCenterMarkerSummary()}")
 
@@ -114,28 +115,19 @@ class QidianPartialCheckInFlow(
 
         AppLogStore.add("步骤 7-13：开始按 OCR 处理广告奖励任务")
         var successfulTaskCount = 0
-        val failedTasks = mutableListOf<String>()
         for (task in WELFARE_AD_TASKS) {
             val taskResult = completeWelfareAdTask(task, bridge, executor)
             if (taskResult.completed) {
                 successfulTaskCount += 1
             } else {
-                failedTasks += task.title
-                AppLogStore.add("福利任务“${task.title}”处理失败：${taskResult.message}；继续处理下一个独立任务")
+                return taskResult
             }
         }
 
-        return if (failedTasks.isEmpty()) {
-            FlowExecutionResult(
-                completed = true,
-                message = "已完成当前配置的福利中心广告奖励任务"
-            )
-        } else {
-            FlowExecutionResult(
-                completed = false,
-                message = "福利中心广告奖励任务已执行完毕，成功 $successfulTaskCount/${WELFARE_AD_TASKS.size}，失败：${failedTasks.joinToString("、")}"
-            )
-        }
+        return FlowExecutionResult(
+            completed = true,
+            message = "已完成当前配置的福利中心广告奖励任务，成功 $successfulTaskCount/${WELFARE_AD_TASKS.size}"
+        )
     }
 
     override fun close() {
@@ -251,7 +243,7 @@ class QidianPartialCheckInFlow(
         var round = 0
         while (round < task.maxRounds) {
             val action = findTaskActionOnCurrentScreen(task, bridge)
-                ?: return FlowExecutionResult(false, "OCR 未找到“${task.title}”后面的“去完成 / 已领取”状态")
+                ?: return restartableFailure("OCR 未找到“${task.title}”后面的“去完成 / 已领取”状态")
 
             when {
                 action.actionText in TASK_DONE_TEXTS -> {
@@ -268,11 +260,11 @@ class QidianPartialCheckInFlow(
                     delay(1_200)
                 }
 
-                else -> return FlowExecutionResult(false, "福利任务“${task.title}”状态不可识别：${action.actionText}")
+                else -> return restartableFailure("福利任务“${task.title}”状态不可识别：${action.actionText}")
             }
         }
 
-        return FlowExecutionResult(false, "福利任务“${task.title}”已执行 ${task.maxRounds} 轮，仍未显示“已领取”")
+        return restartableFailure("福利任务“${task.title}”已执行 ${task.maxRounds} 轮，仍未显示“已领取”")
     }
 
     private suspend fun findTaskActionOnCurrentScreen(
@@ -309,14 +301,14 @@ class QidianPartialCheckInFlow(
     ): FlowExecutionResult {
         AppLogStore.add("步骤 8：点击“去完成”并验证广告界面")
         val initialCloseMatch = tapGoCompleteAndWaitForAd(task, round, initialAction, bridge, executor)
-            ?: return FlowExecutionResult(false, "“${task.title}”第 $round 轮未识别到广告页右上角关闭按钮")
+            ?: return restartableFailure("“${task.title}”第 $round 轮未识别到广告页右上角关闭按钮")
 
         AppLogStore.add("步骤 9：关闭广告并等待“点击去浏览 / 放弃奖励”弹窗")
         val browseDialog = openBrowseDialogWithRetry(task, round, initialCloseMatch, bridge, executor)
-            ?: return FlowExecutionResult(false, "“${task.title}”第 $round 轮未识别到“点击去浏览”弹窗")
+            ?: return restartableFailure("“${task.title}”第 $round 轮未识别到“点击去浏览”弹窗")
 
         val browsePoint = browseDialog.findBrowseActionPoint()
-            ?: return FlowExecutionResult(false, "“${task.title}”第 $round 轮未定位到“点击去浏览”坐标")
+            ?: return restartableFailure("“${task.title}”第 $round 轮未定位到“点击去浏览”坐标")
         executor.execute(AutomationAction.TapPoint(browsePoint)).getOrThrow()
         AppLogStore.add("已点击“点击去浏览”")
 
@@ -324,14 +316,14 @@ class QidianPartialCheckInFlow(
         delay(18_000)
         val rewardCompleted = waitForOcr(bridge, "恭喜已获得奖励", timeoutMillis = 15_000) { ocr ->
             ocr.hasAnyText(REWARD_GRANTED_TEXTS)
-        } ?: return FlowExecutionResult(false, "“${task.title}”第 $round 轮等待后未识别到“恭喜已获得奖励”")
+        } ?: return restartableFailure("“${task.title}”第 $round 轮等待后未识别到“恭喜已获得奖励”")
         AppLogStore.add("广告奖励完成提示已出现，OCR 耗时 ${rewardCompleted.ocr.elapsedMillis} ms")
 
         executor.execute(AutomationAction.Back).getOrThrow()
         AppLogStore.add("已返回广告界面，准备再次关闭广告")
         delay(1_000)
         tapCloseButtonOrFail(bridge, executor, "广告奖励完成后")
-            ?: return FlowExecutionResult(false, "“${task.title}”第 $round 轮返回后未识别到广告关闭按钮")
+            ?: return restartableFailure("“${task.title}”第 $round 轮返回后未识别到广告关闭按钮")
 
         AppLogStore.add("步骤 11：检查奖励确认弹窗")
         val rewardDialogHandled = tapRewardConfirmIfPresent(bridge, executor)
@@ -594,7 +586,32 @@ class QidianPartialCheckInFlow(
             }
             delay(600)
         }
-        return null
+        return inferCloseButtonFromAdOcrFallback(bridge)
+    }
+
+    private suspend fun inferCloseButtonFromAdOcrFallback(
+        bridge: AccessibilityBridge
+    ): CloseButtonMatch? {
+        val screen = captureOcrScreen(bridge).getOrNull() ?: return null
+        if (!screen.ocr.hasAdCloseFallbackHints()) {
+            AppLogStore.add("关闭按钮 OpenCV 未命中，广告页 OCR 兜底也未满足；OCR 预览：${screen.ocr.logPreview()}")
+            return null
+        }
+
+        val point = ScreenPoint(screen.width * 0.94f, screen.height * 0.10f)
+        val radius = (screen.width * 0.045f).coerceIn(20f, 42f).toInt()
+        AppLogStore.add("关闭按钮 OpenCV 未命中，但 OCR 命中广告页提示，使用右上角兜底坐标")
+        return CloseButtonMatch(
+            point = point,
+            bounds = android.graphics.Rect(
+                (point.x - radius).toInt(),
+                (point.y - radius).toInt(),
+                (point.x + radius).toInt(),
+                (point.y + radius).toInt()
+            ),
+            score = AD_OCR_CLOSE_FALLBACK_SCORE,
+            templateName = "ocr_ad_hint_top_right_fallback"
+        )
     }
 
     private fun UiTreeSnapshot.hasBottomTabs(): Boolean {
@@ -648,6 +665,19 @@ class QidianPartialCheckInFlow(
         val hasTaskState = hasAnyText(TASK_ACTION_TEXTS)
         val hasRewardHint = hasAnyText(WELFARE_TASK_REWARD_HINT_TEXTS)
         return hasTaskAnchor && (hasTaskState || hasRewardHint)
+    }
+
+    private fun OcrResult.hasAdCloseFallbackHints(): Boolean {
+        return hasAnyText(AD_CLOSE_FALLBACK_REWARD_HINT_TEXTS) &&
+            hasAnyText(AD_CLOSE_FALLBACK_CONTEXT_TEXTS)
+    }
+
+    private fun restartableFailure(message: String): FlowExecutionResult {
+        return FlowExecutionResult(
+            completed = false,
+            message = message,
+            restartRequested = true
+        )
     }
 
     private fun OcrScreen.upSwipeAction(): AutomationAction.SwipePoints {
@@ -717,6 +747,7 @@ class QidianPartialCheckInFlow(
         private const val REWARD_CONFIRM_TIMEOUT_MILLIS = 10_000L
         private const val MY_PAGE_READY_DELAY_MILLIS = 2_000L
         private const val RETRY_DELAY_MILLIS = 1_000L
+        private const val AD_OCR_CLOSE_FALLBACK_SCORE = 0.52
 
         private val BOTTOM_TABS = listOf("书架", "精选", "发现", "我")
         private const val WELFARE_CENTER_TITLE_MARKER = "福利中心"
@@ -749,6 +780,19 @@ class QidianPartialCheckInFlow(
             "15秒",
             "获得奖励",
             "领取奖励"
+        )
+        private val AD_CLOSE_FALLBACK_REWARD_HINT_TEXTS = listOf(
+            "点击后",
+            "看15秒",
+            "15秒",
+            "可获得奖励",
+            "获得奖励"
+        )
+        private val AD_CLOSE_FALLBACK_CONTEXT_TEXTS = listOf(
+            "查看详情",
+            "进入详情页",
+            "第三方应用",
+            "广告"
         )
         private val REWARD_GRANTED_TEXTS = listOf("恭喜已获得奖励", "恭喜获得奖励", "恭喜获得")
         private val KNOW_BUTTON_TEXTS = listOf(KNOW_TEXT, "知道")
