@@ -241,7 +241,7 @@ class QidianPartialCheckInFlow(
         AppLogStore.add("开始处理福利任务：“${task.title}”")
 
         var round = 0
-        while (round < task.maxRounds) {
+        while (true) {
             val action = findTaskActionOnCurrentScreen(task, bridge)
                 ?: return restartableFailure("OCR 未找到“${task.title}”后面的“去完成 / 已领取”状态")
 
@@ -253,6 +253,7 @@ class QidianPartialCheckInFlow(
 
                 action.actionText in GO_COMPLETE_TEXTS -> {
                     round += 1
+                    AppLogStore.add("福利任务“${task.title}”当前仍是“去完成”，继续执行第 $round 轮")
                     val adResult = completeAdRewardRound(task, round, action, bridge, executor)
                     if (!adResult.completed) {
                         return adResult
@@ -263,8 +264,6 @@ class QidianPartialCheckInFlow(
                 else -> return restartableFailure("福利任务“${task.title}”状态不可识别：${action.actionText}")
             }
         }
-
-        return restartableFailure("福利任务“${task.title}”已执行 ${task.maxRounds} 轮，仍未显示“已领取”")
     }
 
     private suspend fun findTaskActionOnCurrentScreen(
@@ -431,8 +430,10 @@ class QidianPartialCheckInFlow(
         executor: ActionExecutor
     ): CloseButtonMatch? {
         var action = initialAction
-        for (attempt in 1..MAX_CLICK_ATTEMPTS) {
-            AppLogStore.add("福利任务“${task.title}”：第 $round 轮点击“去完成”（$attempt/$MAX_CLICK_ATTEMPTS）")
+        var attempt = 0
+        while (true) {
+            attempt += 1
+            AppLogStore.add("福利任务“${task.title}”：第 $round 轮点击“去完成”（第 $attempt 次）")
             executor.execute(AutomationAction.TapPoint(action.point)).getOrThrow()
 
             val closeMatch = waitForCloseButton(bridge, timeoutMillis = AD_ENTRY_VERIFY_TIMEOUT_MILLIS)
@@ -441,19 +442,17 @@ class QidianPartialCheckInFlow(
                 return closeMatch
             }
 
-            if (attempt < MAX_CLICK_ATTEMPTS) {
-                AppLogStore.add("点击“去完成”后未检测到广告关闭按钮，等待后重试")
-                delay(RETRY_DELAY_MILLIS)
-                val refreshedAction = findTaskActionOnCurrentScreen(task, bridge)
-                if (refreshedAction != null && refreshedAction.actionText in GO_COMPLETE_TEXTS) {
-                    action = refreshedAction
-                } else {
-                    AppLogStore.add("未重新定位到“去完成”，停止使用旧坐标重试")
-                    return null
-                }
+            AppLogStore.add("点击“去完成”后未检测到广告关闭按钮，等待后重新确认任务状态")
+            delay(RETRY_DELAY_MILLIS)
+            val refreshedAction = findTaskActionOnCurrentScreen(task, bridge)
+            if (refreshedAction != null && refreshedAction.actionText in GO_COMPLETE_TEXTS) {
+                AppLogStore.add("任务状态仍是“去完成”，继续点击，不按点击次数触发重启")
+                action = refreshedAction
+            } else {
+                AppLogStore.add("未重新定位到“去完成”，停止使用旧坐标重试")
+                return null
             }
         }
-        return null
     }
 
     private suspend fun tapCloseButtonOrFail(
@@ -811,18 +810,15 @@ class QidianPartialCheckInFlow(
         private val WELFARE_AD_TASKS = listOf(
             WelfareAdTask(
                 title = INCENTIVE_TASK_TEXT,
-                matchTexts = listOf(INCENTIVE_TASK_TEXT, "激励", "完成广告任务", "多重好礼"),
-                maxRounds = 5
+                matchTexts = listOf(INCENTIVE_TASK_TEXT, "激励", "完成广告任务", "多重好礼")
             ),
             WelfareAdTask(
                 title = THREE_AD_TASK_TEXT,
-                matchTexts = listOf(THREE_AD_TASK_TEXT, "完成3个广告", "再完成3次", "10点章节卡"),
-                maxRounds = 5
+                matchTexts = listOf(THREE_AD_TASK_TEXT, "完成3个广告", "再完成3次", "10点章节卡")
             ),
             WelfareAdTask(
                 title = ONE_AD_TASK_TEXT,
-                matchTexts = listOf(ONE_AD_TASK_TEXT, "完成1个广告", "满10点", "3点订阅券"),
-                maxRounds = 3
+                matchTexts = listOf(ONE_AD_TASK_TEXT, "完成1个广告", "满10点", "3点订阅券")
             )
         )
         private const val TASK_STATUS_POLL_ATTEMPTS = 4
@@ -837,8 +833,7 @@ private data class OcrScreen(
 
 private data class WelfareAdTask(
     val title: String,
-    val matchTexts: List<String>,
-    val maxRounds: Int
+    val matchTexts: List<String>
 )
 
 private fun OcrResult.logPreview(): String {
