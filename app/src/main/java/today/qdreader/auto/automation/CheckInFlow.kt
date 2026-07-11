@@ -2,7 +2,9 @@ package today.qdreader.auto.automation
 
 import android.graphics.Bitmap
 import android.graphics.Rect
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import today.qdreader.auto.accessibility.ScreenPoint
 import today.qdreader.auto.accessibility.AccessibilityBridge
 import today.qdreader.auto.accessibility.UiTreeSnapshot
@@ -306,6 +308,22 @@ class QidianPartialCheckInFlow(
         bridge: AccessibilityBridge,
         executor: ActionExecutor
     ): FlowExecutionResult {
+        return try {
+            withTimeout(GO_COMPLETE_TO_REWARD_CONFIRM_TIMEOUT_MILLIS) {
+                completeAdRewardRoundWithinWatchdog(task, round, initialAction, bridge, executor)
+            }
+        } catch (exception: TimeoutCancellationException) {
+            restartableFailure("“${task.title}”第 $round 轮点击“去完成”后 ${GO_COMPLETE_TO_REWARD_CONFIRM_TIMEOUT_MILLIS / 1_000} 秒内未完成“知道了”确认，按卡住处理")
+        }
+    }
+
+    private suspend fun completeAdRewardRoundWithinWatchdog(
+        task: WelfareAdTask,
+        round: Int,
+        initialAction: OcrActionTextMatch,
+        bridge: AccessibilityBridge,
+        executor: ActionExecutor
+    ): FlowExecutionResult {
         AppLogStore.add("步骤 8：点击“去完成”并验证广告界面")
         val initialCloseMatch = tapGoCompleteAndWaitForAd(task, round, initialAction, bridge, executor)
             ?: return restartableFailure("“${task.title}”第 $round 轮未识别到广告页右上角关闭按钮")
@@ -337,16 +355,12 @@ class QidianPartialCheckInFlow(
         if (rewardDialogHandled) {
             delay(900)
         } else {
-            AppLogStore.add("未检测到奖励确认弹窗，复查任务列表是否已恢复")
-            val visibleAction = findTaskActionOnCurrentScreen(task, bridge)
-            if (visibleAction == null) {
-                val recovered = tapInferredRewardConfirmAndVerify(task, bridge, executor)
-                if (!recovered) {
-                    return restartableFailure("“${task.title}”第 $round 轮关闭广告后疑似被奖励弹窗遮挡，兜底点击后仍无法恢复任务列表")
-                }
-            } else {
-                AppLogStore.add("未检测到奖励确认弹窗，但已能定位“${task.title}”状态：${visibleAction.actionText}")
+            AppLogStore.add("未检测到奖励确认弹窗文字，仍按确认按钮常见位置兜底点击一次")
+            val recovered = tapInferredRewardConfirmAndVerify(task, bridge, executor)
+            if (!recovered) {
+                return restartableFailure("“${task.title}”第 $round 轮关闭广告后无法确认奖励弹窗已关闭")
             }
+            delay(900)
         }
 
         return FlowExecutionResult(true, "“${task.title}”第 $round 轮广告奖励已处理")
@@ -376,7 +390,7 @@ class QidianPartialCheckInFlow(
         executor: ActionExecutor
     ): Boolean {
         val screen = captureOcrScreen(bridge).getOrNull() ?: return false
-        AppLogStore.add("任务列表不可操作，按奖励弹窗确认按钮常见位置兜底点击一次")
+        AppLogStore.add("按奖励弹窗确认按钮常见位置兜底点击，防止弹窗遮挡背景任务列表")
         executor.execute(AutomationAction.TapPoint(screen.inferRewardConfirmButtonPoint())).getOrThrow()
         delay(1_000)
         val action = findTaskActionOnCurrentScreen(task, bridge)
@@ -840,7 +854,7 @@ class QidianPartialCheckInFlow(
         if (rewardTextPoint != null) {
             return ScreenPoint(rewardTextPoint.x, rewardTextPoint.y + height * 0.11f)
         }
-        return ScreenPoint(width * 0.5f, height * 0.64f)
+        return ScreenPoint(width * 0.5f, height * 0.625f)
     }
 
     private fun OcrScreen.findCenteredRewardConfirmTextPoint(): ScreenPoint? {
@@ -879,6 +893,7 @@ class QidianPartialCheckInFlow(
         private const val AD_ENTRY_VERIFY_TIMEOUT_MILLIS = 6_000L
         private const val BROWSE_DIALOG_VERIFY_TIMEOUT_MILLIS = 5_000L
         private const val REWARD_CONFIRM_TIMEOUT_MILLIS = 10_000L
+        private const val GO_COMPLETE_TO_REWARD_CONFIRM_TIMEOUT_MILLIS = 60_000L
         private const val GO_COMPLETE_STILL_VISIBLE_WINDOW_MILLIS = 60_000L
         private const val MAX_GO_COMPLETE_STILL_VISIBLE_ATTEMPTS = 6
         private const val TASK_ATTEMPT_TIMEOUT_MILLIS = 8 * 60_000L
