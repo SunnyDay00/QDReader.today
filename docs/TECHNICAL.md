@@ -78,6 +78,7 @@ flowchart TD
 
 - `readActiveWindow()`：读取当前窗口 UI 树。
 - `captureScreenshot()`：通过无障碍截图获取 bitmap。
+- `clickNode(text, viewId)`：在执行瞬间重新读取当前 UI 树，找到文字节点及其可点击父容器并执行 `ACTION_CLICK`。
 - `tap(point)`：坐标点击。
 - `swipe(start, end, durationMillis)`：坐标滑动。
 - `performBack()`：系统返回。
@@ -156,6 +157,7 @@ QidianPartialCheckInFlow(
 动作执行统一走 `ActionExecutor`，目前支持：
 
 - `NoOp`
+- `ClickNode`
 - `TapPoint`
 - `SwipePoints`
 - `Back`
@@ -176,9 +178,12 @@ QidianPartialCheckInFlow(
    - 未登录标识：`登录/注册`，id `com.qidian.QDReader:id/tvLoginHint`
    - 未登录标识：`登录解锁更多精彩功能`，id `com.qidian.QDReader:id/newUserTag`
    - 未登录时回到本 App 并停止。
-5. 确认已登录后等待 2 秒，再点击 `福利中心`；点击后通过 OCR 等待进入福利中心，如果没有进入，等待后重复点击，最多 3 次：
+5. 确认已登录后先等待 2 秒，再连续采样 `福利中心` 入口位置；连续 3 次位置漂移不超过 6 px 后，优先在执行瞬间重新查询 UI 节点并对可点击父容器执行 `ACTION_CLICK`，只有组件点击失败时才使用稳定快照坐标兜底：
    - text：`福利中心`
    - id：`com.qidian.QDReader:id/tvTitle`
+   - 点击后最多等待 10 秒，由 OCR 确认是否进入福利中心。
+   - 超时后若 UI 树仍是“我的”页，不执行返回，重新等待入口稳定并再次点击。
+   - 超时后若不是“我的”页，视为可能误入“我的阅历”等子页面，执行一次返回；返回后确认是“我的”页才继续重试，否则触发整轮重启。
 6. 福利中心页没有稳定 UI 树，通过 OCR 验证页面。福利中心确认不再要求三个固定词全部命中，而是按分组冗余判断：
    - 页面标题组：`福利中心`
    - 收益组：`本周收益`、`周收益`、`本周收`
@@ -245,9 +250,10 @@ QidianPartialCheckInFlow(
 - 点击 `福利中心`：
   - 验证条件：OCR 命中福利中心分组标记。收益/商城/任务奖励至少 2 组，或 `福利中心` 标题加任意 1 个强标记组。
   - 兜底条件：OCR 直接命中福利任务区域，也视为已经进入福利中心。
-  - 前置等待：进入我的页面并确认已登录后，先等待 2 秒再点击 `福利中心`。
-  - 失败处理：等待 1 秒后重新读取我的页面并点击 `福利中心`。
-  - 诊断日志：如果 8 秒内未确认进入，会输出最近一次福利中心 OCR 预览。
+  - 前置等待：进入我的页面并确认已登录后先等待 2 秒，再以 450 ms 间隔采样入口边界；连续 3 次位置漂移不超过 6 px 才允许点击。
+  - 点击方式：优先实时查询 `福利中心` 节点并点击其可点击父容器，避免页面自动刷新/滚动后旧坐标落到下方“我的阅历”；组件点击失败才使用已稳定的坐标兜底。
+  - 超时分支：10 秒内未通过 OCR 确认福利中心时，若当前仍是“我的”页则直接重新定位点击；若是其他页面则先返回，返回后只有确认“我的”页才继续，否则触发整轮重启。
+  - 诊断日志：如果 10 秒内未确认进入，会输出最近一次福利中心 OCR 预览和恢复分支。
   - 最大次数：3 次。
 - 点击任务右侧 `去完成`：
   - 验证条件：OpenCV 检测到广告页右上角关闭按钮。
@@ -284,7 +290,7 @@ QidianPartialCheckInFlow(
 - `MAX_CLICK_ATTEMPTS = 3`
 - `SHORT_VERIFY_TIMEOUT_MILLIS = 2_000`
 - `NAVIGATION_VERIFY_TIMEOUT_MILLIS = 4_000`
-- `WELFARE_VERIFY_TIMEOUT_MILLIS = 8_000`
+- `WELFARE_VERIFY_TIMEOUT_MILLIS = 10_000`
 - `AD_ENTRY_VERIFY_TIMEOUT_MILLIS = 6_000`
 - `BROWSE_DIALOG_VERIFY_TIMEOUT_MILLIS = 5_000`
 - `REWARD_CONFIRM_TIMEOUT_MILLIS = 10_000`
@@ -293,6 +299,10 @@ QidianPartialCheckInFlow(
 - `MAX_GO_COMPLETE_STILL_VISIBLE_ATTEMPTS = 6`
 - `TASK_ATTEMPT_TIMEOUT_MILLIS = 480_000`
 - `MY_PAGE_READY_DELAY_MILLIS = 2_000`
+- `WELFARE_ENTRY_STABLE_TIMEOUT_MILLIS = 6_000`
+- `WELFARE_ENTRY_STABLE_SAMPLE_INTERVAL_MILLIS = 450`
+- `WELFARE_ENTRY_REQUIRED_STABLE_SAMPLES = 3`
+- `WELFARE_ENTRY_MAX_POSITION_DRIFT_PX = 6`
 
 整轮重启相关常量：
 

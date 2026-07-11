@@ -108,7 +108,7 @@ class QidianPartialCheckInFlow(
         delay(MY_PAGE_READY_DELAY_MILLIS)
 
         AppLogStore.add("步骤 4：点击“福利中心”")
-        val welfareCenter = tapWelfareCenterWithRetry(myPage, bridge, executor)
+        val welfareCenter = tapWelfareCenterWithRetry(bridge, executor)
             ?: return restartableFailure("连续点击“福利中心”$MAX_CLICK_ATTEMPTS 次后仍未进入福利中心界面")
 
         AppLogStore.add("步骤 5：OCR 已确认福利中心，命中：${welfareCenter.ocr.welfareCenterMarkerSummary()}")
@@ -201,25 +201,30 @@ class QidianPartialCheckInFlow(
     }
 
     private suspend fun tapWelfareCenterWithRetry(
-        initialMyPage: UiTreeSnapshot,
         bridge: AccessibilityBridge,
         executor: ActionExecutor
     ): OcrScreen? {
-        var myPage: UiTreeSnapshot? = initialMyPage
         for (attempt in 1..MAX_CLICK_ATTEMPTS) {
-            val activeMyPage = myPage ?: waitForTree(bridge, "我的界面", timeoutMillis = SHORT_VERIFY_TIMEOUT_MILLIS) { tree ->
-                tree.isMyPageCandidate()
-            }
-            val welfareNode = activeMyPage?.findNode(text = "福利中心", viewId = WELFARE_TITLE_ID)
-            if (activeMyPage == null || welfareNode == null) {
-                AppLogStore.add("第 $attempt/$MAX_CLICK_ATTEMPTS 次点击“福利中心”前未找到入口")
+            val stableEntry = waitForStableWelfareEntry(bridge)
+            if (stableEntry == null) {
+                AppLogStore.add("第 $attempt/$MAX_CLICK_ATTEMPTS 次点击“福利中心”前，入口位置未稳定")
                 delay(RETRY_DELAY_MILLIS)
-                myPage = null
                 continue
             }
 
-            AppLogStore.add("点击“福利中心”（$attempt/$MAX_CLICK_ATTEMPTS）")
-            executor.execute(AutomationAction.TapPoint(activeMyPage.clickPointFor(welfareNode))).getOrThrow()
+            val (activeMyPage, welfareNode) = stableEntry
+            val fallbackPoint = activeMyPage.clickPointFor(welfareNode)
+            AppLogStore.add(
+                "福利中心入口已稳定在 y=${welfareNode.bounds.exactCenterY().toInt()}，" +
+                    "执行实时组件点击（$attempt/$MAX_CLICK_ATTEMPTS）"
+            )
+            val componentClick = executor.execute(
+                AutomationAction.ClickNode(text = "福利中心", viewId = WELFARE_TITLE_ID)
+            )
+            if (componentClick.isFailure) {
+                AppLogStore.add("实时组件点击失败，使用稳定坐标兜底：${componentClick.exceptionOrNull()?.message}")
+                executor.execute(AutomationAction.TapPoint(fallbackPoint)).getOrThrow()
+            }
 
             val welfareCenter = waitForWelfareCenter(bridge, timeoutMillis = WELFARE_VERIFY_TIMEOUT_MILLIS)
             if (welfareCenter != null) {
@@ -227,14 +232,73 @@ class QidianPartialCheckInFlow(
             }
 
             if (attempt < MAX_CLICK_ATTEMPTS) {
-                AppLogStore.add("点击“福利中心”后未进入福利中心界面，等待后重试")
-                delay(RETRY_DELAY_MILLIS)
-                myPage = waitForTree(bridge, "我的界面", timeoutMillis = SHORT_VERIFY_TIMEOUT_MILLIS) { tree ->
-                    tree.isMyPageCandidate()
+                AppLogStore.add("点击“福利中心”后 10 秒仍未确认进入，开始恢复“我的”界面")
+                if (!recoverMyPageAfterWelfareMiss(bridge, executor)) {
+                    AppLogStore.add("未能恢复到“我的”界面")
+                    return null
                 }
             }
         }
         return null
+    }
+
+    private suspend fun waitForStableWelfareEntry(
+        bridge: AccessibilityBridge
+    ): Pair<UiTreeSnapshot, today.qdreader.auto.accessibility.UiNodeSnapshot>? {
+        val deadline = System.currentTimeMillis() + WELFARE_ENTRY_STABLE_TIMEOUT_MILLIS
+        var previousBounds: Rect? = null
+        var stableSampleCount = 0
+
+        while (System.currentTimeMillis() < deadline) {
+            val tree = bridge.readActiveWindow()
+            val node = tree
+                ?.takeIf { it.isMyPageCandidate() }
+                ?.findNode(text = "福利中心", viewId = WELFARE_TITLE_ID)
+            if (tree != null && node != null) {
+                val isStable = previousBounds?.isNear(node.bounds, WELFARE_ENTRY_MAX_POSITION_DRIFT_PX) == true
+                stableSampleCount = if (isStable) stableSampleCount + 1 else 1
+                previousBounds = Rect(node.bounds)
+                if (stableSampleCount >= WELFARE_ENTRY_REQUIRED_STABLE_SAMPLES) {
+                    return tree to node
+                }
+            } else {
+                previousBounds = null
+                stableSampleCount = 0
+            }
+            delay(WELFARE_ENTRY_STABLE_SAMPLE_INTERVAL_MILLIS)
+        }
+        return null
+    }
+
+    private suspend fun recoverMyPageAfterWelfareMiss(
+        bridge: AccessibilityBridge,
+        executor: ActionExecutor
+    ): Boolean {
+        val currentTree = bridge.readActiveWindow()
+        if (currentTree?.isMyPageCandidate() == true) {
+            AppLogStore.add("当前仍在“我的”界面，不执行返回；等待页面重新稳定")
+            delay(RETRY_DELAY_MILLIS)
+            return true
+        }
+
+        AppLogStore.add("可能误入“我的阅历”等子页面，执行返回后重新定位福利中心")
+        if (executor.execute(AutomationAction.Back).isFailure) return false
+        delay(RETRY_DELAY_MILLIS)
+
+        val myPage = waitForTree(bridge, "返回后的我的界面", timeoutMillis = NAVIGATION_VERIFY_TIMEOUT_MILLIS) { tree ->
+            tree.isMyPageCandidate()
+        }
+        if (myPage != null) return true
+
+        AppLogStore.add("返回后仍无法确认“我的”界面，交给整轮重启恢复")
+        return false
+    }
+
+    private fun Rect.isNear(other: Rect, maxDriftPx: Int): Boolean {
+        return abs(left - other.left) <= maxDriftPx &&
+            abs(top - other.top) <= maxDriftPx &&
+            abs(right - other.right) <= maxDriftPx &&
+            abs(bottom - other.bottom) <= maxDriftPx
     }
 
     private suspend fun completeWelfareAdTask(
@@ -889,7 +953,7 @@ class QidianPartialCheckInFlow(
         private const val MAX_CLICK_ATTEMPTS = 3
         private const val SHORT_VERIFY_TIMEOUT_MILLIS = 2_000L
         private const val NAVIGATION_VERIFY_TIMEOUT_MILLIS = 4_000L
-        private const val WELFARE_VERIFY_TIMEOUT_MILLIS = 8_000L
+        private const val WELFARE_VERIFY_TIMEOUT_MILLIS = 10_000L
         private const val AD_ENTRY_VERIFY_TIMEOUT_MILLIS = 6_000L
         private const val BROWSE_DIALOG_VERIFY_TIMEOUT_MILLIS = 5_000L
         private const val REWARD_CONFIRM_TIMEOUT_MILLIS = 10_000L
@@ -898,6 +962,10 @@ class QidianPartialCheckInFlow(
         private const val MAX_GO_COMPLETE_STILL_VISIBLE_ATTEMPTS = 6
         private const val TASK_ATTEMPT_TIMEOUT_MILLIS = 8 * 60_000L
         private const val MY_PAGE_READY_DELAY_MILLIS = 2_000L
+        private const val WELFARE_ENTRY_STABLE_TIMEOUT_MILLIS = 6_000L
+        private const val WELFARE_ENTRY_STABLE_SAMPLE_INTERVAL_MILLIS = 450L
+        private const val WELFARE_ENTRY_REQUIRED_STABLE_SAMPLES = 3
+        private const val WELFARE_ENTRY_MAX_POSITION_DRIFT_PX = 6
         private const val RETRY_DELAY_MILLIS = 1_000L
         private const val AD_OCR_CLOSE_FALLBACK_SCORE = 0.52
         private const val TASK_ROW_MIN_Y_FRACTION = 0.12f

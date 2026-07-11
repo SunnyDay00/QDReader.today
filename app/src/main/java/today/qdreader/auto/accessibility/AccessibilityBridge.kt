@@ -28,6 +28,7 @@ interface AccessibilityBridge {
     fun currentPackageName(): String?
     fun readActiveWindow(): UiTreeSnapshot?
     suspend fun captureScreenshot(): Result<Bitmap>
+    suspend fun clickNode(text: String, viewId: String? = null): Result<Unit>
     suspend fun tap(point: ScreenPoint): Result<Unit>
     suspend fun swipe(start: ScreenPoint, end: ScreenPoint, durationMillis: Long = 350): Result<Unit>
     fun performBack(): Boolean

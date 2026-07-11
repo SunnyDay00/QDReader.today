@@ -23,6 +23,12 @@ class AccessibilityBridgeImpl(
         return activeService.screenshotBitmap()
     }
 
+    override suspend fun clickNode(text: String, viewId: String?): Result<Unit> {
+        val activeService = service
+            ?: return Result.failure(IllegalStateException("无障碍服务未连接，无法点击组件"))
+        return activeService.clickNode(text, viewId)
+    }
+
     override suspend fun tap(point: ScreenPoint): Result<Unit> {
         val activeService = service
             ?: return Result.failure(IllegalStateException("无障碍服务未连接，无法点击"))

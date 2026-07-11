@@ -5,6 +5,7 @@ import today.qdreader.auto.accessibility.ScreenPoint
 
 sealed interface AutomationAction {
     data object NoOp : AutomationAction
+    data class ClickNode(val text: String, val viewId: String? = null) : AutomationAction
     data class TapPoint(val point: ScreenPoint) : AutomationAction
     data class SwipePoints(
         val start: ScreenPoint,
@@ -21,6 +22,7 @@ class ActionExecutor(
     suspend fun execute(action: AutomationAction): Result<Unit> {
         return when (action) {
             AutomationAction.NoOp -> Result.success(Unit)
+            is AutomationAction.ClickNode -> bridge.clickNode(action.text, action.viewId)
             is AutomationAction.TapPoint -> bridge.tap(action.point)
             is AutomationAction.SwipePoints -> bridge.swipe(
                 start = action.start,

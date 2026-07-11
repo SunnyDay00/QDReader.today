@@ -96,6 +96,17 @@ class QidianAccessibilityService : AccessibilityService() {
         return dispatchGestureResult(gesture, "点击失败")
     }
 
+    fun clickNode(text: String, viewId: String?): Result<Unit> = runCatching {
+        val root = rootInActiveWindow ?: error("当前窗口 UI 树不可用")
+        val target = root.findNode(text, viewId)
+            ?: error("当前窗口未找到组件：$text")
+        val clickableNode = target.findClickableAncestor()
+            ?: error("组件没有可点击的父容器：$text")
+        check(clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            "组件点击失败：$text"
+        }
+    }
+
     suspend fun swipePoints(
         start: ScreenPoint,
         end: ScreenPoint,
@@ -152,6 +163,29 @@ class QidianAccessibilityService : AccessibilityService() {
             enabled = isEnabled,
             children = childSnapshots
         )
+    }
+
+    private fun AccessibilityNodeInfo.findNode(
+        text: String,
+        viewId: String?
+    ): AccessibilityNodeInfo? {
+        if (this.text?.toString() == text && (viewId == null || viewIdResourceName == viewId)) {
+            return this
+        }
+        for (index in 0 until childCount) {
+            val match = getChild(index)?.findNode(text, viewId)
+            if (match != null) return match
+        }
+        return null
+    }
+
+    private fun AccessibilityNodeInfo.findClickableAncestor(): AccessibilityNodeInfo? {
+        var candidate: AccessibilityNodeInfo? = this
+        while (candidate != null) {
+            if (candidate.isClickable && candidate.isEnabled) return candidate
+            candidate = candidate.parent
+        }
+        return null
     }
 
     companion object {
