@@ -31,7 +31,7 @@
 - `docs/TECHNICAL.md`：本文档，维护完整技术细节。
 - `.github/workflows/android-debug-apk.yml`：Debug APK 远端构建 workflow。
 - `app/src/main/AndroidManifest.xml`：应用权限、无障碍服务、目标包查询配置。
-- `app/src/main/java/today/qdreader/auto/MainActivity.kt`：Compose 管理界面、权限入口、自动任务入口。
+- `app/src/main/java/today/qdreader/auto/MainActivity.kt`：Compose 管理界面、状态展示、自动任务入口和版本号展示。
 - `app/src/main/java/today/qdreader/auto/accessibility/`：无障碍服务和桥接能力。
 - `app/src/main/java/today/qdreader/auto/automation/`：自动化控制器、动作执行器、签到/福利流程。
 - `app/src/main/java/today/qdreader/auto/vision/`：OCR、模板匹配、广告关闭按钮识别。
@@ -59,15 +59,16 @@ flowchart TD
 
 ## 管理界面
 
-`MainActivity.kt` 是工具型面板，不是营销页。界面使用浅灰背景、白色 8dp 圆角工具卡片、细边框、紧凑数字输入和克制红色主操作按钮，避免大面积粉色背景和过大的输入控件。当前主要区域：
+`MainActivity.kt` 是工具型面板，不是营销页。界面使用浅灰背景、白色 8dp 圆角工具卡片、细边框、自绘紧凑数字输入和克制红色主操作按钮，避免大面积粉色背景和过大的输入控件。当前主要区域：
 
 - 顶部品牌区：显示红色书本标识、应用名、服务就绪状态，以及无障碍/服务/起点三个状态 chip。
 - 自动任务区：手动运行自动签到、每日自动运行开关、执行时间、失败重启次数、保存入口和最近结果。
-- 权限区：用三枚紧凑按钮展示并进入无障碍、通知、起点读书。
 - 日志区：最近运行日志，用于定位 OCR、截图、手势和广告关闭问题，日志显示在浅灰代码面板内。
 - 底部状态区：无障碍、服务连接、通知、起点安装、当前窗口和刷新状态入口。
+- 版本号：列表底部显示 `BuildConfig.VERSION_NAME` 和 `BuildConfig.VERSION_CODE`，用于区分 GitHub Actions 产物。
 
 主界面不再提供独立的“截图并识别文字”和“测试模板匹配”按钮；OCR 和模板匹配能力保留在自动任务流程内部。
+主界面不再显示独立的“权限”卡片；权限和目标 App 状态保留在顶部品牌区和底部状态区展示。
 
 ## 无障碍桥接
 
@@ -350,6 +351,15 @@ QidianPartialCheckInFlow(
 - `./gradlew assembleRelease`
 - `./gradlew bundle*`
 - 下载 GitHub APK artifact，除非用户明确要求。
+
+## 版本号管理
+
+- APK 版本来自 `app/build.gradle.kts` 的 `versionCode` 和 `versionName`。
+- `buildFeatures.buildConfig = true`，主界面底部通过 `BuildConfig.VERSION_NAME` 和 `BuildConfig.VERSION_CODE` 显示当前版本。
+- 当前仓库使用 `.githooks/pre-commit` 作为本地提交前 hook；已通过 `git config core.hooksPath .githooks` 启用。
+- 每次执行 `git commit` 前，hook 会自动将 `versionCode` 加 1，并将 `versionName` 的 patch 位加 1，例如 `0.1.0` 到 `0.1.1`。
+- hook 会自动 `git add app/build.gradle.kts`，确保版本号进入同一次提交。
+- 版本递增 hook 不运行 Gradle，不生成 APK，不违反本地构建约束。
 
 ## 扩展指南
 

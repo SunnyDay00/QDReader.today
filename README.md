@@ -11,9 +11,9 @@
 
 当前版本实现自动化框架和一段起点福利任务流程：
 
-- Compose 工具型管理界面，应用显示名称为“起点自动签到”，界面为浅灰背景 + 白色紧凑工具卡片，启动器图标为红底白色书本 adaptive icon。
-- 无障碍服务状态检测和授权入口。
-- 通知权限申请和状态检测。
+- Compose 工具型管理界面，应用显示名称为“起点自动签到”，界面为浅灰背景 + 白色紧凑工具卡片，底部显示当前 APK 版本号，启动器图标为红底白色书本 adaptive icon。
+- 无障碍服务状态检测。
+- 通知权限状态检测。
 - 起点读书安装检测和打开入口。
 - 无障碍截图、坐标点击、滑动、返回等桥接接口。
 - bundled ML Kit 中文 OCR 离线识别能力。
@@ -45,6 +45,12 @@ APK 不在本地构建。Debug APK 由 GitHub Actions 构建并上传为 artifac
 - 产物：`app/build/outputs/apk/debug/app-debug.apk`
 
 本地只做代码检查、敏感信息扫描和 workflow 检查，不执行本地 APK 构建命令。
+
+## 版本号
+
+APK 版本号来自 `app/build.gradle.kts` 的 `versionName` 和 `versionCode`，主界面底部会显示 `版本 vX.Y.Z (code)`。
+
+当前仓库配置了 `.githooks/pre-commit`，每次本地提交前会自动递增 `versionCode` 和 `versionName` 的 patch 位，并把版本文件加入本次提交。
 
 ## 本地隐私
 

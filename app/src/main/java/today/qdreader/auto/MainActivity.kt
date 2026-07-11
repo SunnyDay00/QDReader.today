@@ -1,12 +1,8 @@
 package today.qdreader.auto
 
-import android.Manifest
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -24,15 +20,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -42,8 +37,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -62,6 +55,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -108,12 +102,6 @@ class MainActivity : ComponentActivity() {
                 var runOutput by remember {
                     mutableStateOf("尚未运行自动任务。")
                 }
-                val notificationLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestPermission()
-                ) { granted ->
-                    AppLogStore.add(if (granted) "通知权限已授予" else "通知权限被拒绝")
-                    dashboardState = loadDashboardState(activity, scheduleRepository)
-                }
 
                 fun refresh() {
                     dashboardState = loadDashboardState(activity, scheduleRepository)
@@ -132,21 +120,6 @@ class MainActivity : ComponentActivity() {
                     logs = logs,
                     runOutput = runOutput,
                     onRefresh = { refresh() },
-                    onOpenAccessibility = {
-                        DeviceStatus.openAccessibilitySettings(activity)
-                    },
-                    onRequestNotification = {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        } else {
-                            AppLogStore.add("当前系统不需要通知运行时权限")
-                        }
-                    },
-                    onOpenTargetApp = {
-                        if (!DeviceStatus.openTargetApp(activity)) {
-                            AppLogStore.add("未找到起点读书启动入口")
-                        }
-                    },
                     onRunAutomation = {
                         scope.launch {
                             runOutput = "自动任务运行中..."
@@ -200,9 +173,6 @@ private fun DashboardScreen(
     logs: List<AppLogEntry>,
     runOutput: String,
     onRefresh: () -> Unit,
-    onOpenAccessibility: () -> Unit,
-    onRequestNotification: () -> Unit,
-    onOpenTargetApp: () -> Unit,
     onRunAutomation: () -> Unit,
     onSaveSchedule: (ScheduleConfig) -> Unit,
     onClearLogs: () -> Unit
@@ -241,16 +211,9 @@ private fun DashboardScreen(
                     onSaveSchedule = onSaveSchedule
                 )
             }
-            item {
-                PermissionPanel(
-                    state = state,
-                    onOpenAccessibility = onOpenAccessibility,
-                    onRequestNotification = onRequestNotification,
-                    onOpenTargetApp = onOpenTargetApp
-                )
-            }
             item { LogsPanel(logs = logs, onClearLogs = onClearLogs) }
             item { StatusPanel(state = state, onRefresh = onRefresh) }
+            item { VersionFooter() }
             item { Spacer(modifier = Modifier.height(16.dp)) }
         }
     }
@@ -427,7 +390,8 @@ private fun AutomationPanel(
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.Bottom
         ) {
             CompactNumberField(
                 value = hourText,
@@ -462,7 +426,7 @@ private fun AutomationPanel(
                 },
                 modifier = Modifier
                     .weight(1f)
-                    .height(52.dp),
+                    .height(44.dp),
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Text("保存")
@@ -486,25 +450,6 @@ private fun AutomationPanel(
                 style = MaterialTheme.typography.bodySmall,
                 color = DarkRed
             )
-        }
-    }
-}
-
-@Composable
-private fun PermissionPanel(
-    state: DashboardState,
-    onOpenAccessibility: () -> Unit,
-    onRequestNotification: () -> Unit,
-    onOpenTargetApp: () -> Unit
-) {
-    SectionCard(title = "权限") {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            PermissionButton("无障碍", state.accessibilityEnabled, Icons.Filled.Settings, onOpenAccessibility, Modifier.weight(1f))
-            PermissionButton("通知", state.notificationGranted, Icons.Filled.Notifications, onRequestNotification, Modifier.weight(1f))
-            PermissionButton("起点", state.targetInstalled, Icons.Filled.PlayArrow, onOpenTargetApp, Modifier.weight(1f))
         }
     }
 }
@@ -607,44 +552,54 @@ private fun CompactNumberField(
     label: String,
     modifier: Modifier = Modifier
 ) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        label = { Text(label) },
-        modifier = modifier.height(56.dp),
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-        shape = RoundedCornerShape(8.dp),
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = PrimaryRed,
-            focusedLabelColor = PrimaryRed
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = TextSecondary
         )
-    )
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                color = TextPrimary,
+                textAlign = TextAlign.Center
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.White)
+                .border(1.dp, BorderColor, RoundedCornerShape(8.dp))
+                .padding(horizontal = 8.dp),
+            decorationBox = { innerTextField ->
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    innerTextField()
+                }
+            }
+        )
+    }
 }
 
 @Composable
-private fun PermissionButton(
-    label: String,
-    ok: Boolean,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    OutlinedButton(
-        onClick = onClick,
-        modifier = modifier.height(66.dp),
-        shape = RoundedCornerShape(8.dp),
-        colors = ButtonDefaults.outlinedButtonColors(
-            containerColor = if (ok) Color(0xFFF0FDF4) else Color.White,
-            contentColor = if (ok) Green else TextSecondary
-        )
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(19.dp))
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-    }
+private fun VersionFooter() {
+    Text(
+        text = "版本 v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp, bottom = 4.dp),
+        style = MaterialTheme.typography.bodySmall,
+        color = TextSecondary,
+        textAlign = TextAlign.Center
+    )
 }
 
 @Composable

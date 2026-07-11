@@ -12,6 +12,7 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 gradlew text eol=lf
+.githooks/* text eol=lf
 
 *.jar binary
 *.png binary

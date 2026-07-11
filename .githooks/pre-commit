@@ -1,0 +1,46 @@
+#!/bin/sh
+set -eu
+
+version_file="app/build.gradle.kts"
+
+if [ ! -f "$version_file" ]; then
+  echo "Version file not found: $version_file" >&2
+  exit 1
+fi
+
+version_code="$(sed -n 's/^[[:space:]]*versionCode = \([0-9][0-9]*\).*/\1/p' "$version_file" | head -n 1)"
+version_name="$(sed -n 's/^[[:space:]]*versionName = "\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)".*/\1/p' "$version_file" | head -n 1)"
+
+if [ -z "$version_code" ] || [ -z "$version_name" ]; then
+  echo "Could not parse versionCode/versionName from $version_file" >&2
+  exit 1
+fi
+
+major="$(printf '%s' "$version_name" | cut -d . -f 1)"
+minor="$(printf '%s' "$version_name" | cut -d . -f 2)"
+patch="$(printf '%s' "$version_name" | cut -d . -f 3)"
+
+new_version_code=$((version_code + 1))
+new_patch=$((patch + 1))
+new_version_name="${major}.${minor}.${new_patch}"
+
+tmp_file="${version_file}.tmp.$$"
+awk \
+  -v new_code="$new_version_code" \
+  -v new_name="$new_version_name" \
+  'BEGIN { code_done = 0; name_done = 0 }
+  {
+    if (!code_done && $0 ~ /^[[:space:]]*versionCode = [0-9]+/) {
+      sub(/versionCode = [0-9]+/, "versionCode = " new_code)
+      code_done = 1
+    }
+    if (!name_done && $0 ~ /^[[:space:]]*versionName = "[0-9]+\.[0-9]+\.[0-9]+"/) {
+      sub(/versionName = "[0-9]+\.[0-9]+\.[0-9]+"/, "versionName = \"" new_name "\"")
+      name_done = 1
+    }
+    print
+  }' "$version_file" > "$tmp_file"
+mv "$tmp_file" "$version_file"
+
+git add "$version_file"
+echo "Bumped app version to v${new_version_name} (${new_version_code})"
