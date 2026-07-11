@@ -104,7 +104,10 @@ fun OcrResult.findActionAfterAnyText(
 }
 
 private fun String.normalizedForOcr(): String {
-    return filterNot { it.isWhitespace() || it == '/' || it == '\\' || it == '|' }
+    return filterNot { char ->
+        char.isWhitespace() ||
+            char in "/\\|,，.。:：;；!！?？()（）[]【】{}"
+    }
 }
 
 private fun Rect.isLikelySameTaskRow(anchor: Rect): Boolean {

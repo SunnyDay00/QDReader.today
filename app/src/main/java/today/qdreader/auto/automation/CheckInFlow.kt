@@ -243,7 +243,12 @@ class QidianPartialCheckInFlow(
         AppLogStore.add("开始处理福利任务：“${task.title}”")
 
         var round = 0
+        val taskStartedAtMillis = System.currentTimeMillis()
         while (true) {
+            if (System.currentTimeMillis() - taskStartedAtMillis > TASK_ATTEMPT_TIMEOUT_MILLIS) {
+                return restartableFailure("福利任务“${task.title}”超过 ${TASK_ATTEMPT_TIMEOUT_MILLIS / 60_000} 分钟仍未结束，按步骤卡住处理")
+            }
+
             val action = findTaskActionOnCurrentScreen(task, bridge)
                 ?: return restartableFailure("OCR 未找到“${task.title}”后面的“去完成 / 已领取”状态")
 
@@ -332,7 +337,16 @@ class QidianPartialCheckInFlow(
         if (rewardDialogHandled) {
             delay(900)
         } else {
-            AppLogStore.add("未检测到奖励确认弹窗，继续复查任务状态")
+            AppLogStore.add("未检测到奖励确认弹窗，复查任务列表是否已恢复")
+            val visibleAction = findTaskActionOnCurrentScreen(task, bridge)
+            if (visibleAction == null) {
+                val recovered = tapInferredRewardConfirmAndVerify(task, bridge, executor)
+                if (!recovered) {
+                    return restartableFailure("“${task.title}”第 $round 轮关闭广告后疑似被奖励弹窗遮挡，兜底点击后仍无法恢复任务列表")
+                }
+            } else {
+                AppLogStore.add("未检测到奖励确认弹窗，但已能定位“${task.title}”状态：${visibleAction.actionText}")
+            }
         }
 
         return FlowExecutionResult(true, "“${task.title}”第 $round 轮广告奖励已处理")
@@ -354,6 +368,23 @@ class QidianPartialCheckInFlow(
             AppLogStore.add("奖励弹窗识别到奖励文案但未定位“知道了”，已点击弹窗确认按钮兜底坐标")
         }
         return true
+    }
+
+    private suspend fun tapInferredRewardConfirmAndVerify(
+        task: WelfareAdTask,
+        bridge: AccessibilityBridge,
+        executor: ActionExecutor
+    ): Boolean {
+        val screen = captureOcrScreen(bridge).getOrNull() ?: return false
+        AppLogStore.add("任务列表不可操作，按奖励弹窗确认按钮常见位置兜底点击一次")
+        executor.execute(AutomationAction.TapPoint(screen.inferRewardConfirmButtonPoint())).getOrThrow()
+        delay(1_000)
+        val action = findTaskActionOnCurrentScreen(task, bridge)
+        if (action != null) {
+            AppLogStore.add("奖励确认兜底点击后已恢复任务列表，当前状态：${action.actionText}")
+            return true
+        }
+        return false
     }
 
     private suspend fun waitForRewardConfirmDialog(
@@ -434,6 +465,7 @@ class QidianPartialCheckInFlow(
     ): CloseButtonMatch? {
         var action = initialAction
         var attempt = 0
+        val startedAtMillis = System.currentTimeMillis()
         while (true) {
             attempt += 1
             AppLogStore.add("福利任务“${task.title}”：第 $round 轮点击“去完成”（第 $attempt 次）")
@@ -449,7 +481,17 @@ class QidianPartialCheckInFlow(
             delay(RETRY_DELAY_MILLIS)
             val refreshedAction = findTaskActionOnCurrentScreen(task, bridge)
             if (refreshedAction != null && refreshedAction.isGoComplete()) {
-                AppLogStore.add("任务状态仍是“去完成”，继续点击，不按点击次数触发重启")
+                val elapsedMillis = System.currentTimeMillis() - startedAtMillis
+                if (
+                    attempt >= MAX_GO_COMPLETE_STILL_VISIBLE_ATTEMPTS ||
+                    elapsedMillis >= GO_COMPLETE_STILL_VISIBLE_WINDOW_MILLIS
+                ) {
+                    AppLogStore.add(
+                        "任务状态仍是“去完成”，但 ${attempt} 次点击 / ${elapsedMillis / 1_000} 秒内始终未进入广告页，交给整轮重启恢复"
+                    )
+                    return null
+                }
+                AppLogStore.add("任务状态仍是“去完成”，继续点击；当前仍在安全重试窗口内")
                 action = refreshedAction
             } else {
                 AppLogStore.add("未重新定位到“去完成”，停止使用旧坐标重试")
@@ -837,6 +879,9 @@ class QidianPartialCheckInFlow(
         private const val AD_ENTRY_VERIFY_TIMEOUT_MILLIS = 6_000L
         private const val BROWSE_DIALOG_VERIFY_TIMEOUT_MILLIS = 5_000L
         private const val REWARD_CONFIRM_TIMEOUT_MILLIS = 10_000L
+        private const val GO_COMPLETE_STILL_VISIBLE_WINDOW_MILLIS = 60_000L
+        private const val MAX_GO_COMPLETE_STILL_VISIBLE_ATTEMPTS = 6
+        private const val TASK_ATTEMPT_TIMEOUT_MILLIS = 8 * 60_000L
         private const val MY_PAGE_READY_DELAY_MILLIS = 2_000L
         private const val RETRY_DELAY_MILLIS = 1_000L
         private const val AD_OCR_CLOSE_FALLBACK_SCORE = 0.52
@@ -889,12 +934,13 @@ class QidianPartialCheckInFlow(
             "第三方应用",
             "广告"
         )
-        private val REWARD_GRANTED_TEXTS = listOf("恭喜已获得奖励", "恭喜获得奖励", "恭喜获得")
-        private val KNOW_BUTTON_TEXTS = listOf(KNOW_TEXT, "知道")
+        private val REWARD_GRANTED_TEXTS = listOf("恭喜已获得奖励", "恭喜获得奖励", "恭喜获得", "已获得奖励", "奖励已到账")
+        private val KNOW_BUTTON_TEXTS = listOf(KNOW_TEXT, "我知道了", "知道啦", "知道")
         private val REWARD_DIALOG_STRONG_TEXTS = listOf(
             "恭喜获得",
             "恭喜已获得奖励",
             "恭喜获得奖励",
+            "已获得奖励",
             "获得奖励",
             "恭喜"
         )

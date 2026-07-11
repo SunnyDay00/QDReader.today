@@ -2,7 +2,9 @@ package today.qdreader.auto.automation
 
 import android.content.Context
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import today.qdreader.auto.accessibility.AccessibilityBridgeImpl
 import today.qdreader.auto.core.AutomationTrigger
 import today.qdreader.auto.core.DeviceStatus
@@ -53,7 +55,15 @@ class AutomationController(
             AppLogStore.add("开始执行自动化流程$attemptLabel")
             val flow = flowFactory()
             val result = try {
-                flow.run(bridge, executor)
+                withTimeout(FLOW_ATTEMPT_TIMEOUT_MILLIS) {
+                    flow.run(bridge, executor)
+                }
+            } catch (exception: TimeoutCancellationException) {
+                FlowExecutionResult(
+                    completed = false,
+                    message = "自动化流程超过 ${FLOW_ATTEMPT_TIMEOUT_MILLIS / 60_000} 分钟仍未结束，按步骤卡住处理",
+                    restartRequested = true
+                )
             } catch (exception: CancellationException) {
                 throw exception
             } catch (exception: Exception) {
@@ -99,5 +109,6 @@ class AutomationController(
     companion object {
         private const val MAX_RESTART_LIMIT = 10
         private const val RESTART_DELAY_MILLIS = 2_000L
+        private const val FLOW_ATTEMPT_TIMEOUT_MILLIS = 15 * 60_000L
     }
 }
