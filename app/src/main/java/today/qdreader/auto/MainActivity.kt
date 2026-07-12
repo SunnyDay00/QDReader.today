@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -62,8 +64,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import today.qdreader.auto.accessibility.AccessibilityBridgeImpl
 import today.qdreader.auto.automation.AutomationController
+import today.qdreader.auto.automation.AutomationRunState
 import today.qdreader.auto.core.AutomationTrigger
 import today.qdreader.auto.core.DeviceStatus
 import today.qdreader.auto.logs.AppLogEntry
@@ -97,6 +101,7 @@ class MainActivity : ComponentActivity() {
                 val activity = this@MainActivity
                 val scope = rememberCoroutineScope()
                 val logs by AppLogStore.entries.collectAsStateWithLifecycle()
+                val automationRunning by AutomationRunState.isRunning.collectAsStateWithLifecycle()
                 var dashboardState by remember {
                     mutableStateOf(loadDashboardState(activity, scheduleRepository))
                 }
@@ -123,21 +128,33 @@ class MainActivity : ComponentActivity() {
                     state = dashboardState,
                     logs = logs,
                     runOutput = runOutput,
+                    automationRunning = automationRunning,
                     onRefresh = { refresh() },
                     onRunAutomation = {
                         scope.launch {
                             runOutput = "自动任务运行中..."
-                            val result = AutomationController(activity).run(
-                                AutomationTrigger.Manual,
-                                maxRestartCount = dashboardState.scheduleConfig.maxRestartCount
-                            )
-                            runOutput = result.message
-                            AppNotifier.showStatus(
-                                activity,
-                                if (result.success) "起点自动签到已完成" else "起点自动签到未完成",
-                                result.message
-                            )
-                            refresh()
+                            try {
+                                val result = AutomationController(activity).run(
+                                    AutomationTrigger.Manual,
+                                    maxRestartCount = dashboardState.scheduleConfig.maxRestartCount
+                                )
+                                runOutput = result.message
+                                AppNotifier.showStatus(
+                                    activity,
+                                    if (result.success) "起点自动签到已完成" else "起点自动签到未完成",
+                                    result.message
+                                )
+                            } catch (_: CancellationException) {
+                                runOutput = "自动任务已停止。"
+                                AppLogStore.add("自动任务已由用户停止，不再继续重启")
+                            } finally {
+                                refresh()
+                            }
+                        }
+                    },
+                    onStopAutomation = {
+                        if (AutomationRunState.stop()) {
+                            runOutput = "自动任务已停止。"
                         }
                     },
                     onSaveSchedule = { config ->
@@ -148,6 +165,12 @@ class MainActivity : ComponentActivity() {
                     },
                     onOpenExactAlarmSettings = {
                         DeviceStatus.openExactAlarmSettings(activity)
+                    },
+                    onOpenAccessibilitySettings = {
+                        DeviceStatus.openAccessibilitySettings(activity)
+                    },
+                    onOpenNotificationSettings = {
+                        DeviceStatus.openNotificationSettings(activity)
                     },
                     onClearLogs = {
                         AppLogStore.clear()
@@ -180,10 +203,14 @@ private fun DashboardScreen(
     state: DashboardState,
     logs: List<AppLogEntry>,
     runOutput: String,
+    automationRunning: Boolean,
     onRefresh: () -> Unit,
     onRunAutomation: () -> Unit,
+    onStopAutomation: () -> Unit,
     onSaveSchedule: (ScheduleConfig) -> Unit,
     onOpenExactAlarmSettings: () -> Unit,
+    onOpenAccessibilitySettings: () -> Unit,
+    onOpenNotificationSettings: () -> Unit,
     onClearLogs: () -> Unit
 ) {
     Scaffold(
@@ -211,19 +238,34 @@ private fun DashboardScreen(
                 .padding(horizontal = 14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            item { HeaderPanel(state = state) }
+            item {
+                HeaderPanel(
+                    state = state,
+                    onOpenAccessibilitySettings = onOpenAccessibilitySettings
+                )
+            }
             item {
                 AutomationPanel(
                     config = state.scheduleConfig,
                     exactAlarmAllowed = state.exactAlarmAllowed,
                     runOutput = runOutput,
+                    automationRunning = automationRunning,
                     onRunAutomation = onRunAutomation,
+                    onStopAutomation = onStopAutomation,
                     onSaveSchedule = onSaveSchedule,
                     onOpenExactAlarmSettings = onOpenExactAlarmSettings
                 )
             }
             item { LogsPanel(logs = logs, onClearLogs = onClearLogs) }
-            item { StatusPanel(state = state, onRefresh = onRefresh) }
+            item {
+                StatusPanel(
+                    state = state,
+                    onRefresh = onRefresh,
+                    onOpenAccessibilitySettings = onOpenAccessibilitySettings,
+                    onOpenNotificationSettings = onOpenNotificationSettings,
+                    onOpenExactAlarmSettings = onOpenExactAlarmSettings
+                )
+            }
             item { VersionFooter() }
             item { Spacer(modifier = Modifier.height(16.dp)) }
         }
@@ -270,7 +312,10 @@ private fun SectionCard(
 }
 
 @Composable
-private fun HeaderPanel(state: DashboardState) {
+private fun HeaderPanel(
+    state: DashboardState,
+    onOpenAccessibilitySettings: () -> Unit
+) {
     val ready = state.accessibilityEnabled && state.serviceConnected && state.targetInstalled
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -313,8 +358,18 @@ private fun HeaderPanel(state: DashboardState) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                StatusMetric("无障碍", state.accessibilityEnabled, Modifier.weight(1f))
-                StatusMetric("服务", state.serviceConnected, Modifier.weight(1f))
+                StatusMetric(
+                    "无障碍",
+                    state.accessibilityEnabled,
+                    Modifier.weight(1f),
+                    onClick = if (state.accessibilityEnabled) null else onOpenAccessibilitySettings
+                )
+                StatusMetric(
+                    "服务",
+                    state.serviceConnected,
+                    Modifier.weight(1f),
+                    onClick = if (state.serviceConnected) null else onOpenAccessibilitySettings
+                )
                 StatusMetric("起点", state.targetInstalled, Modifier.weight(1f))
             }
         }
@@ -371,7 +426,9 @@ private fun AutomationPanel(
     config: ScheduleConfig,
     exactAlarmAllowed: Boolean,
     runOutput: String,
+    automationRunning: Boolean,
     onRunAutomation: () -> Unit,
+    onStopAutomation: () -> Unit,
     onSaveSchedule: (ScheduleConfig) -> Unit,
     onOpenExactAlarmSettings: () -> Unit
 ) {
@@ -382,16 +439,25 @@ private fun AutomationPanel(
 
     SectionCard(title = "自动任务") {
         Button(
-            onClick = onRunAutomation,
+            onClick = if (automationRunning) onStopAutomation else onRunAutomation,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(48.dp),
             shape = RoundedCornerShape(8.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = PrimaryRed)
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (automationRunning) ErrorRed else PrimaryRed
+            )
         ) {
-            Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
+            Icon(
+                if (automationRunning) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp)
+            )
             Spacer(modifier = Modifier.width(8.dp))
-            Text("运行自动签到", fontWeight = FontWeight.SemiBold)
+            Text(
+                if (automationRunning) "停止运行" else "运行自动签到",
+                fontWeight = FontWeight.SemiBold
+            )
         }
 
         SettingLine(
@@ -481,7 +547,7 @@ private fun AutomationPanel(
 
         SelectionContainer {
             Text(
-                text = runOutput,
+                text = if (automationRunning) "自动任务运行中..." else runOutput,
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(8.dp))
@@ -537,11 +603,18 @@ private fun LogsPanel(logs: List<AppLogEntry>, onClearLogs: () -> Unit) {
 }
 
 @Composable
-private fun StatusPanel(state: DashboardState, onRefresh: () -> Unit) {
+private fun StatusPanel(
+    state: DashboardState,
+    onRefresh: () -> Unit,
+    onOpenAccessibilitySettings: () -> Unit,
+    onOpenNotificationSettings: () -> Unit,
+    onOpenExactAlarmSettings: () -> Unit
+) {
     SectionCard(title = "状态") {
-        StatusLine("无障碍授权", state.accessibilityEnabled)
-        StatusLine("服务连接", state.serviceConnected)
-        StatusLine("通知权限", state.notificationGranted)
+        StatusLine("无障碍授权", state.accessibilityEnabled, onOpenAccessibilitySettings)
+        StatusLine("服务连接", state.serviceConnected, onOpenAccessibilitySettings)
+        StatusLine("通知权限", state.notificationGranted, onOpenNotificationSettings)
+        StatusLine("精确定时", state.exactAlarmAllowed, onOpenExactAlarmSettings)
         StatusLine("起点读书", state.targetInstalled)
         Text(
             text = "当前窗口：${state.currentPackageName ?: "未知"}",
@@ -643,11 +716,17 @@ private fun VersionFooter() {
 }
 
 @Composable
-private fun StatusMetric(label: String, ok: Boolean, modifier: Modifier = Modifier) {
+private fun StatusMetric(
+    label: String,
+    ok: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null
+) {
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
             .background(if (ok) Color(0xFFF0FDF4) else Color(0xFFFEF2F2))
+            .clickable(enabled = !ok && onClick != null) { onClick?.invoke() }
             .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -664,14 +743,21 @@ private fun StatusMetric(label: String, ok: Boolean, modifier: Modifier = Modifi
 }
 
 @Composable
-private fun StatusLine(label: String, ok: Boolean) {
+private fun StatusLine(label: String, ok: Boolean, onClick: (() -> Unit)? = null) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = !ok && onClick != null) { onClick?.invoke() }
+            .padding(vertical = 5.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(label, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
-        ReadinessPill(label = if (ok) "已就绪" else "未就绪", ok = ok)
+        ReadinessPill(
+            label = if (ok) "已就绪" else if (onClick != null) "去授权" else "未就绪",
+            ok = ok
+        )
     }
 }
 

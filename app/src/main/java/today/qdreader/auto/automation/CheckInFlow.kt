@@ -417,7 +417,8 @@ class QidianPartialCheckInFlow(
         if (rewardDialogHandled) {
             AppLogStore.add("奖励确认弹窗已消失，允许重新检查任务状态")
         } else {
-            AppLogStore.add("未识别到“知道了”或奖励弹窗；下一步先再次检查弹窗，仍找不到才点击“去完成”")
+            AppLogStore.add("未识别到“知道了”或奖励弹窗，直接点击“知道了”固定兜底位置")
+            tapDefaultRewardConfirm(bridge, executor)
         }
 
         return FlowExecutionResult(true, "“${task.title}”第 $round 轮广告奖励已处理")
@@ -475,6 +476,28 @@ class QidianPartialCheckInFlow(
             screen = nextScreen
         }
         return false
+    }
+
+    private suspend fun tapDefaultRewardConfirm(
+        bridge: AccessibilityBridge,
+        executor: ActionExecutor
+    ) {
+        val bitmap = bridge.captureScreenshot().getOrNull()
+        val treeBounds = bridge.readActiveWindow()?.root?.bounds
+        val width = bitmap?.width ?: treeBounds?.width() ?: 0
+        val height = bitmap?.height ?: treeBounds?.height() ?: 0
+        bitmap?.recycle()
+        if (width <= 0 || height <= 0) {
+            AppLogStore.add("奖励确认固定兜底失败：无法获取当前屏幕尺寸")
+            return
+        }
+        val point = ScreenPoint(
+            x = width * DEFAULT_REWARD_CONFIRM_X_FRACTION,
+            y = height * DEFAULT_REWARD_CONFIRM_Y_FRACTION
+        )
+        executor.execute(AutomationAction.TapPoint(point)).getOrThrow()
+        AppLogStore.add("已点击“知道了”固定兜底坐标=(${point.x.toInt()},${point.y.toInt()})")
+        delay(REWARD_CONFIRM_DISMISS_VERIFY_DELAY_MILLIS)
     }
 
     private suspend fun waitForRewardConfirmDialog(
@@ -932,7 +955,10 @@ class QidianPartialCheckInFlow(
         if (rewardTextPoint != null) {
             return ScreenPoint(rewardTextPoint.x, rewardTextPoint.y + height * 0.11f)
         }
-        return ScreenPoint(width * 0.5f, height * 0.625f)
+        return ScreenPoint(
+            width * DEFAULT_REWARD_CONFIRM_X_FRACTION,
+            height * DEFAULT_REWARD_CONFIRM_Y_FRACTION
+        )
     }
 
     private fun OcrScreen.findCenteredRewardStrongTextPoint(): ScreenPoint? {
@@ -986,9 +1012,11 @@ class QidianPartialCheckInFlow(
         private const val WELFARE_VERIFY_TIMEOUT_MILLIS = 10_000L
         private const val AD_ENTRY_VERIFY_TIMEOUT_MILLIS = 6_000L
         private const val BROWSE_DIALOG_VERIFY_TIMEOUT_MILLIS = 5_000L
-        private const val REWARD_CONFIRM_TIMEOUT_MILLIS = 10_000L
+        private const val REWARD_CONFIRM_TIMEOUT_MILLIS = 6_000L
         private const val REWARD_CONFIRM_MAX_TAP_ATTEMPTS = 3
         private const val REWARD_CONFIRM_DISMISS_VERIFY_DELAY_MILLIS = 900L
+        private const val DEFAULT_REWARD_CONFIRM_X_FRACTION = 0.50f
+        private const val DEFAULT_REWARD_CONFIRM_Y_FRACTION = 0.66f
         private const val GO_COMPLETE_TO_REWARD_CONFIRM_TIMEOUT_MILLIS = 60_000L
         private const val GO_COMPLETE_STILL_VISIBLE_WINDOW_MILLIS = 60_000L
         private const val MAX_GO_COMPLETE_STILL_VISIBLE_ATTEMPTS = 6

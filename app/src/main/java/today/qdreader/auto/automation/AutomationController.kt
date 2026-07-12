@@ -4,6 +4,8 @@ import android.content.Context
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withTimeout
 import today.qdreader.auto.accessibility.AccessibilityBridgeImpl
 import today.qdreader.auto.core.AutomationTrigger
@@ -30,6 +32,21 @@ class AutomationController(
     suspend fun run(
         trigger: AutomationTrigger,
         maxRestartCount: Int = ScheduleRepository(context).load().maxRestartCount
+    ): AutomationRunResult {
+        val runJob = currentCoroutineContext().job
+        if (!AutomationRunState.register(runJob)) {
+            return fail("已有自动任务正在运行")
+        }
+        return try {
+            runRegistered(trigger, maxRestartCount)
+        } finally {
+            AutomationRunState.unregister(runJob)
+        }
+    }
+
+    private suspend fun runRegistered(
+        trigger: AutomationTrigger,
+        maxRestartCount: Int
     ): AutomationRunResult {
         AppLogStore.add("自动化入口触发：${trigger.name}")
 

@@ -65,7 +65,9 @@ flowchart TD
 
 - 顶部品牌区：显示红色书本标识、应用名、服务就绪状态，以及无障碍/服务/起点三个状态 chip。
 - 自动任务区：手动运行自动签到、每日自动运行开关、执行时间、失败重启次数、保存入口和最近结果。
+- 运行控制：`AutomationRunState` 保存当前自动化 Job 和 `isRunning` StateFlow。运行中主按钮切换为“停止运行”，点击后取消当前手动任务或同进程定时 Worker；控制器透传 `CancellationException`，不会把用户停止误判为步骤失败或触发重启。
 - 精确定时提示：Android 12 及以上未取得“闹钟和提醒”权限时，在自动任务区显示紧凑警告和授权入口；未授权时仍保留系统定时和 WorkManager 补偿，但执行时间可能延迟。
+- 权限跳转：顶部红色“无障碍/服务”状态块和底部异常状态行可点击。无障碍或服务异常打开无障碍设置，通知异常打开应用设置，精确定时异常打开“闹钟和提醒”授权。
 - 日志区：最近运行日志，用于定位 OCR、截图、手势和广告关闭问题，日志显示在浅灰代码面板内。
 - 底部状态区：无障碍、服务连接、通知、起点安装、当前窗口和刷新状态入口。
 - 版本号：列表底部显示 `BuildConfig.VERSION_NAME` 和 `BuildConfig.VERSION_CODE`，用于区分 GitHub Actions 产物。
@@ -235,7 +237,7 @@ QidianPartialCheckInFlow(
     - 如果只识别到 `恭喜获得`、`获得奖励` 或中心区域的 `订阅券`、`章节卡`、`点币` 等奖励文案，但未定位到 `知道了`，则按弹窗下方中心确认按钮坐标兜底点击。
     - 每次点击后重新 OCR 奖励弹窗专用标记，最多连续处理 3 次，直到确认弹窗文字消失。
     - 不再使用背景任务列表的 `去完成` 作为“弹窗已关闭”验证条件；半透明奖励弹窗覆盖时，背景任务文字仍会被 OCR 识别。
-    - 如果 10 秒内始终没有识别到 `知道了` 或中心奖励弹窗标记，则不盲点确认坐标，进入下一步前再次快速检查；仍找不到弹窗时才允许重新定位并点击当前任务的 `去完成`。
+    - 如果 6 秒内始终没有识别到 `知道了` 或中心奖励弹窗标记，直接点击屏幕宽度 50%、高度 66% 的固定确认按钮位置；该比例来自多张 1080×2400 实机页面中稳定的“知道了”按钮中心。
 13. 回到福利中心当前屏，复查任务状态。若仍是 `去完成`，继续下一轮；直到 `已领取` 或状态无法确认。
 
 三项广告奖励任务按固定顺序执行：
@@ -282,6 +284,7 @@ QidianPartialCheckInFlow(
   - 二次门禁：每次准备识别或点击 `去完成` 前，先快速检查是否残留奖励弹窗；检测到时优先再次点击 `知道了`。
   - 最终顺序：广告返回后先找 `知道了`；确实找不到奖励弹窗时，才继续定位并点击 `去完成`。
   - 精确点击：`知道了` 使用 ML Kit element 级边界；日志记录最终点击坐标，用于区分“未识别”和“识别后点偏”。
+  - 无条件兜底：广告返回后等待 6 秒仍无任何奖励弹窗 OCR 标记，直接点击 `(screenWidth × 0.50, screenHeight × 0.66)` 一次，然后继续任务状态检查。
   - 防误触：`恭喜获得` 等强标记限定在屏幕中央区域；`订阅券`、`章节卡`、`点币` 的有效横向区域收紧到屏幕中间 28%-72%，避免把左侧背景任务奖励文字误判为弹窗。
   - 诊断日志：未命中时输出最近一次奖励确认弹窗 OCR 预览。
 
@@ -305,9 +308,11 @@ QidianPartialCheckInFlow(
 - `WELFARE_VERIFY_TIMEOUT_MILLIS = 10_000`
 - `AD_ENTRY_VERIFY_TIMEOUT_MILLIS = 6_000`
 - `BROWSE_DIALOG_VERIFY_TIMEOUT_MILLIS = 5_000`
-- `REWARD_CONFIRM_TIMEOUT_MILLIS = 10_000`
+- `REWARD_CONFIRM_TIMEOUT_MILLIS = 6_000`
 - `REWARD_CONFIRM_MAX_TAP_ATTEMPTS = 3`
 - `REWARD_CONFIRM_DISMISS_VERIFY_DELAY_MILLIS = 900`
+- `DEFAULT_REWARD_CONFIRM_X_FRACTION = 0.50`
+- `DEFAULT_REWARD_CONFIRM_Y_FRACTION = 0.66`
 - `GO_COMPLETE_TO_REWARD_CONFIRM_TIMEOUT_MILLIS = 60_000`
 - `GO_COMPLETE_STILL_VISIBLE_WINDOW_MILLIS = 60_000`
 - `MAX_GO_COMPLETE_STILL_VISIBLE_ATTEMPTS = 6`
