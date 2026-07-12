@@ -52,6 +52,24 @@ class AutomationController(
 
         while (true) {
             val attemptLabel = if (restartLimit > 0) "（重启 ${restartCount}/$restartLimit）" else ""
+            val launchLabel = if (restartCount == 0) {
+                "首次运行前重启起点读书"
+            } else {
+                "执行整轮重启（$restartCount/$restartLimit）"
+            }
+            AppLogStore.add(launchLabel)
+            if (!bridge.restartTargetApp()) {
+                lastMessage = "起点读书重启失败：未确认重新进入前台"
+                AppLogStore.add(lastMessage)
+                if (restartCount >= restartLimit) {
+                    bridge.launchAutomationApp()
+                    return AutomationRunResult(success = false, message = lastMessage)
+                }
+                restartCount += 1
+                delay(RESTART_DELAY_MILLIS)
+                continue
+            }
+
             AppLogStore.add("开始执行自动化流程$attemptLabel")
             val flow = flowFactory()
             val result = try {
@@ -100,8 +118,7 @@ class AutomationController(
             }
 
             restartCount += 1
-            AppLogStore.add("当前步骤多次重试无结果，关闭并重启起点读书后重新开始完整任务（$restartCount/$restartLimit）")
-            bridge.restartTargetApp()
+            AppLogStore.add("当前步骤多次重试无结果，准备执行整轮重启（$restartCount/$restartLimit）")
             delay(RESTART_DELAY_MILLIS)
         }
     }

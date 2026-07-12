@@ -86,7 +86,7 @@ flowchart TD
 - `swipe(start, end, durationMillis)`：坐标滑动。
 - `performBack()`：系统返回。
 - `launchTargetApp()`：启动起点读书。
-- `restartTargetApp()`：尽力关闭后台后重新启动起点读书。
+- `restartTargetApp()`：挂起执行可验证重启。先返回桌面让起点退出前台，再请求关闭其后台进程，重新启动后等待无障碍确认目标包重新成为前台。
 - `launchAutomationApp()`：回到本自动化 App。
 - `closeTargetAppAndGoHome()`：自动任务全部完成后执行系统 Home，并在起点进入后台后调用 `killBackgroundProcesses` 请求关闭其后台进程。
 
@@ -244,7 +244,7 @@ QidianPartialCheckInFlow(
 - 某个步骤重试耗尽、OCR 连续失败、广告页关闭按钮失败、浏览弹窗失败、等待奖励失败，或无法重新确认当前任务状态时，该轮 flow 会返回 `restartRequested = true`。
 - 如果当前任务状态仍是 `去完成`，不会因为固定 3 次点击立即重启；但同一轮点击在 6 次或 60 秒内始终不能进入广告页，或点击 `去完成` 后 60 秒仍未完成奖励确认处理时，会触发整轮重启。
 - 单项福利任务有 8 分钟看门狗；整次 flow attempt 有 15 分钟看门狗。看门狗超时等同步骤卡住，会返回 `restartRequested = true`。
-- `AutomationController` 收到 `restartRequested = true` 后，不再继续下一个任务，而是关闭并重启起点读书，然后从步骤 1 重新运行完整任务。
+- `AutomationController` 收到 `restartRequested = true` 后，不再继续下一个任务，而是增加重启计数并进入下一轮。每轮开始统一执行一次可验证重启，然后从步骤 1 重新运行完整任务。
 - 默认最多重启 3 次，可在主界面 `自动任务` 的 `失败重启` 输入框调整，允许范围 0-10。设置保存在 `ScheduleRepository`，手动运行和定时运行共用。
 - 未登录、未安装起点、无障碍未启用等不可恢复失败不会重启，直接停止并回到本 App。
 
@@ -324,6 +324,21 @@ QidianPartialCheckInFlow(
 - `ScheduleRepository.MAX_RESTART_COUNT = 10`
 - `AutomationController.FLOW_ATTEMPT_TIMEOUT_MILLIS = 900_000`
 - `AutomationController.RESTART_DELAY_MILLIS = 2_000`
+
+### 可验证重启
+
+旧实现直接对仍在前台的起点调用 `killBackgroundProcesses`，Android 不会结束前台进程；随后再次发送启动 Intent 只会复用现有 Activity。控制器还忽略了启动返回值，并且流程步骤 1 会重复调用一次重启，因此日志可能显示“已重启”，实际界面和进程都没有重新开始。
+
+当前重启只由 `AutomationController` 在每轮开始时调用一次，`QidianPartialCheckInFlow` 步骤 1 只负责验证首页：
+
+1. 无障碍执行 `GLOBAL_ACTION_HOME`，日志记录“已返回桌面”。
+2. 最多等待 3 秒，确认前台包离开起点。
+3. 调用 `killBackgroundProcesses` 请求关闭已经进入后台的起点主进程。
+4. 等待 900 ms 后，通过无障碍服务 Context 发送带 `NEW_TASK + CLEAR_TASK + CLEAR_TOP` 的起点启动 Intent，清空旧 Activity 栈；即使系统没有结束整个进程，也会重建起点主界面。
+5. 最多等待 8 秒，只有无障碍确认 `com.qidian.QDReader` 重新成为前台，`restartTargetApp()` 才返回成功。
+6. Flow 随后最多等待 12 秒，并通过底部 4 个 tab 验证真正进入起点首页。
+
+日志区分“准备执行整轮重启”“已发送启动请求”“已确认重新进入前台”和具体失败阶段。重启动作本身失败时不会启动 Flow，而是消耗一次重试次数后再次执行完整重启；达到上限后停止并回到自动化 App。
 - `RETRY_DELAY_MILLIS = 1_000`
 
 ## OCR 失败诊断

@@ -85,14 +85,11 @@ class QidianPartialCheckInFlow(
         bridge: AccessibilityBridge,
         executor: ActionExecutor
     ): FlowExecutionResult {
-        AppLogStore.add("步骤 1：重新启动起点读书")
-        if (!bridge.restartTargetApp()) {
-            return FlowExecutionResult(false, "无法启动起点读书")
-        }
-
+        AppLogStore.add("步骤 1：验证重新启动后的起点读书首页")
         val home = waitForTree(bridge, "起点首页", timeoutMillis = 12_000) { tree ->
             tree.packageName == AppConstants.QIDIAN_PACKAGE && tree.hasBottomTabs()
         } ?: return restartableFailure("未进入起点读书首页：未检测到底部 4 个 tab")
+        AppLogStore.add("步骤 1：已确认起点首页和底部 4 个 tab")
 
         AppLogStore.add("步骤 2：已检测到底部 tab，点击“我”")
         val myPage = tapMeTabWithRetry(home, bridge, executor)

@@ -68,23 +68,13 @@ object DeviceStatus {
         context.startActivity(intent)
     }
 
-    fun openTargetApp(context: Context): Boolean {
+    fun openTargetApp(context: Context, clearTask: Boolean = false): Boolean {
         val intent = context.packageManager.getLaunchIntentForPackage(AppConstants.QIDIAN_PACKAGE)
             ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             ?: return false
-        context.startActivity(intent)
-        return true
-    }
-
-    fun restartTargetApp(context: Context): Boolean {
-        runCatching {
-            val activityManager = context.getSystemService(ActivityManager::class.java)
-            activityManager.killBackgroundProcesses(AppConstants.QIDIAN_PACKAGE)
+        if (clearTask) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
-
-        val intent = context.packageManager.getLaunchIntentForPackage(AppConstants.QIDIAN_PACKAGE)
-            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-            ?: return false
         context.startActivity(intent)
         return true
     }
