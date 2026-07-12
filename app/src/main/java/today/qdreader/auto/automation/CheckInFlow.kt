@@ -21,6 +21,7 @@ import today.qdreader.auto.vision.OcrResult
 import today.qdreader.auto.vision.findActionAfterAnyText
 import today.qdreader.auto.vision.findAnyTextCenter
 import today.qdreader.auto.vision.findBlocksContaining
+import today.qdreader.auto.vision.findTextCenter
 import today.qdreader.auto.vision.hasText
 import today.qdreader.auto.vision.hasAnyText
 import kotlin.math.abs
@@ -453,13 +454,16 @@ class QidianPartialCheckInFlow(
     ): Boolean {
         var screen = initialScreen
         for (attempt in 1..REWARD_CONFIRM_MAX_TAP_ATTEMPTS) {
-            val knowPoint = screen.ocr.findAnyTextCenter(KNOW_BUTTON_TEXTS)
+            val knowMatch = KNOW_BUTTON_TEXTS.firstNotNullOfOrNull { text ->
+                screen.ocr.findTextCenter(text)?.let { point -> text to point }
+            }
+            val knowPoint = knowMatch?.second
             val tapPoint = knowPoint ?: screen.inferRewardConfirmButtonPoint()
             executor.execute(AutomationAction.TapPoint(tapPoint)).getOrThrow()
 
             if (knowPoint != null) {
                 AppLogStore.add(
-                    "已识别并点击“知道了”，坐标=(${knowPoint.x.toInt()},${knowPoint.y.toInt()})" +
+                    "已识别并点击“${knowMatch?.first ?: KNOW_TEXT}”，坐标=(${knowPoint.x.toInt()},${knowPoint.y.toInt()})" +
                         "（$attempt/$REWARD_CONFIRM_MAX_TAP_ATTEMPTS）"
                 )
             } else {
@@ -1078,7 +1082,7 @@ class QidianPartialCheckInFlow(
             "广告"
         )
         private val REWARD_GRANTED_TEXTS = listOf("恭喜已获得奖励", "恭喜获得奖励", "恭喜获得", "已获得奖励", "奖励已到账")
-        private val KNOW_BUTTON_TEXTS = listOf(KNOW_TEXT, "我知道了", "知道啦", "知道")
+        private val KNOW_BUTTON_TEXTS = listOf("我知道了", "我知道啦", KNOW_TEXT, "知道啦", "知道")
         private val REWARD_DIALOG_STRONG_TEXTS = listOf(
             "恭喜获得",
             "恭喜已获得奖励",
