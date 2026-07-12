@@ -24,8 +24,9 @@ fun OcrResult.findBlocksContaining(needle: String): List<OcrTextBlock> {
 }
 
 fun OcrResult.findTextCenter(needle: String): ScreenPoint? {
-    return findBlocksContaining(needle)
-        .mapNotNull { it.bounds }
+    val normalizedNeedle = needle.normalizedForOcr()
+    return blocks
+        .mapNotNull { block -> block.findPreciseTextBounds(normalizedNeedle) }
         .minByOrNull { bounds -> bounds.top * 10_000 + bounds.left }
         ?.let { bounds -> ScreenPoint(bounds.exactCenterX(), bounds.exactCenterY()) }
 }
@@ -110,6 +111,53 @@ private fun String.normalizedForOcr(): String {
     }
 }
 
+private fun OcrTextBlock.findPreciseTextBounds(normalizedNeedle: String): Rect? {
+    val lineBounds = bounds ?: return null
+    val normalizedLine = text.normalizedForOcr()
+    val matchStart = normalizedLine.indexOf(normalizedNeedle)
+    if (matchStart < 0) return null
+    val matchEnd = matchStart + normalizedNeedle.length
+
+    val elementRanges = buildList {
+        var offset = 0
+        elements.forEach { element ->
+            val normalizedElement = element.text.normalizedForOcr()
+            val start = offset
+            val end = start + normalizedElement.length
+            if (normalizedElement.isNotEmpty()) {
+                add(ElementTextRange(element.bounds, start, end))
+            }
+            offset = end
+        }
+    }
+    val elementTextLength = elementRanges.lastOrNull()?.end ?: 0
+    if (elementRanges.isNotEmpty() && elementTextLength == normalizedLine.length) {
+        val matchingBounds = elementRanges
+            .filter { range -> range.end > matchStart && range.start < matchEnd }
+            .mapNotNull { range -> range.bounds }
+        if (matchingBounds.isNotEmpty()) {
+            return matchingBounds.reduce { merged, rect ->
+                Rect(
+                    minOf(merged.left, rect.left),
+                    minOf(merged.top, rect.top),
+                    maxOf(merged.right, rect.right),
+                    maxOf(merged.bottom, rect.bottom)
+                )
+            }
+        }
+    }
+
+    if (normalizedLine.isEmpty()) return lineBounds
+    val startFraction = matchStart.toFloat() / normalizedLine.length
+    val endFraction = matchEnd.toFloat() / normalizedLine.length
+    return Rect(
+        (lineBounds.left + lineBounds.width() * startFraction).toInt(),
+        lineBounds.top,
+        (lineBounds.left + lineBounds.width() * endFraction).toInt(),
+        lineBounds.bottom
+    )
+}
+
 private fun Rect.isLikelySameTaskRow(anchor: Rect): Boolean {
     val verticalTolerance = maxOf(150f, anchor.height() * 3.2f)
     val verticalDelta = abs(exactCenterY() - anchor.exactCenterY())
@@ -120,4 +168,10 @@ private fun Rect.isLikelySameTaskRow(anchor: Rect): Boolean {
 private data class ScoredOcrActionTextMatch(
     val match: OcrActionTextMatch,
     val score: Float
+)
+
+private data class ElementTextRange(
+    val bounds: Rect?,
+    val start: Int,
+    val end: Int
 )

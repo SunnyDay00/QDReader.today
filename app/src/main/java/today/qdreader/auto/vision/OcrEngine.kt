@@ -5,7 +5,8 @@ import android.graphics.Rect
 
 data class OcrTextBlock(
     val text: String,
-    val bounds: Rect?
+    val bounds: Rect?,
+    val elements: List<OcrTextBlock> = emptyList()
 )
 
 data class OcrResult(

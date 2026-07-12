@@ -25,7 +25,15 @@ class MlKitChineseOcrEngine : OcrEngine {
                 rawText = detectedText.text,
                 blocks = detectedText.textBlocks
                     .flatMap { block -> block.lines }
-                    .map { line -> OcrTextBlock(text = line.text, bounds = line.boundingBox) },
+                    .map { line ->
+                        OcrTextBlock(
+                            text = line.text,
+                            bounds = line.boundingBox,
+                            elements = line.elements.map { element ->
+                                OcrTextBlock(text = element.text, bounds = element.boundingBox)
+                            }
+                        )
+                    },
                 elapsedMillis = elapsed
             )
         }

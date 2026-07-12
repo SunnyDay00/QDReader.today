@@ -460,7 +460,10 @@ class QidianPartialCheckInFlow(
             executor.execute(AutomationAction.TapPoint(tapPoint)).getOrThrow()
 
             if (knowPoint != null) {
-                AppLogStore.add("已识别并点击“知道了”（$attempt/$REWARD_CONFIRM_MAX_TAP_ATTEMPTS）")
+                AppLogStore.add(
+                    "已识别并点击“知道了”，坐标=(${knowPoint.x.toInt()},${knowPoint.y.toInt()})" +
+                        "（$attempt/$REWARD_CONFIRM_MAX_TAP_ATTEMPTS）"
+                )
             } else {
                 AppLogStore.add("识别到奖励弹窗但未定位“知道了”，点击确认按钮兜底坐标（$attempt/$REWARD_CONFIRM_MAX_TAP_ATTEMPTS）")
             }
