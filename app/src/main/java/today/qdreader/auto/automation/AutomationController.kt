@@ -79,6 +79,11 @@ class AutomationController(
             AppLogStore.add(result.message)
             lastMessage = result.message
             if (result.completed) {
+                AppLogStore.add("所有自动任务已完成，关闭起点读书并返回桌面")
+                bridge.closeTargetAppAndGoHome()
+                    .onFailure { error ->
+                        AppLogStore.add("任务已完成，但关闭起点或返回桌面失败：${error.message}")
+                    }
                 return AutomationRunResult(success = true, message = result.message)
             }
 

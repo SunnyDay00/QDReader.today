@@ -2,6 +2,7 @@ package today.qdreader.auto.core
 
 import android.Manifest
 import android.app.ActivityManager
+import android.app.AlarmManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -39,6 +40,20 @@ object DeviceStatus {
         }.isSuccess
     }
 
+    fun canScheduleExactAlarms(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+        return context.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
+    }
+
+    fun openExactAlarmSettings(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+            .setData(Uri.parse("package:${context.packageName}"))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(intent) }
+            .onFailure { openNotificationSettings(context) }
+    }
+
     fun openAccessibilitySettings(context: Context) {
         context.startActivity(
             Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
@@ -72,6 +87,14 @@ object DeviceStatus {
             ?: return false
         context.startActivity(intent)
         return true
+    }
+
+    fun closeTargetApp(context: Context): Boolean {
+        return runCatching {
+            val activityManager = context.getSystemService(ActivityManager::class.java)
+            activityManager.killBackgroundProcesses(AppConstants.QIDIAN_PACKAGE)
+            true
+        }.getOrDefault(false)
     }
 
     fun openAutomationApp(context: Context): Boolean {

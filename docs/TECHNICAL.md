@@ -44,7 +44,9 @@
 ```mermaid
 flowchart TD
     UI["MainActivity Compose UI"] --> Controller["AutomationController"]
-    Schedule["CheckInWorker"] --> Controller
+    Alarm["AlarmManager / ScheduleReceiver"] --> Schedule["CheckInWorker"]
+    Fallback["WorkManager delayed fallback"] --> Schedule
+    Schedule --> Controller
     Controller --> Bridge["AccessibilityBridgeImpl"]
     Controller --> Flow["QidianPartialCheckInFlow"]
     Flow --> Executor["ActionExecutor"]
@@ -63,6 +65,7 @@ flowchart TD
 
 - 顶部品牌区：显示红色书本标识、应用名、服务就绪状态，以及无障碍/服务/起点三个状态 chip。
 - 自动任务区：手动运行自动签到、每日自动运行开关、执行时间、失败重启次数、保存入口和最近结果。
+- 精确定时提示：Android 12 及以上未取得“闹钟和提醒”权限时，在自动任务区显示紧凑警告和授权入口；未授权时仍保留系统定时和 WorkManager 补偿，但执行时间可能延迟。
 - 日志区：最近运行日志，用于定位 OCR、截图、手势和广告关闭问题，日志显示在浅灰代码面板内。
 - 底部状态区：无障碍、服务连接、通知、起点安装、当前窗口和刷新状态入口。
 - 版本号：列表底部显示 `BuildConfig.VERSION_NAME` 和 `BuildConfig.VERSION_CODE`，用于区分 GitHub Actions 产物。
@@ -85,8 +88,11 @@ flowchart TD
 - `launchTargetApp()`：启动起点读书。
 - `restartTargetApp()`：尽力关闭后台后重新启动起点读书。
 - `launchAutomationApp()`：回到本自动化 App。
+- `closeTargetAppAndGoHome()`：自动任务全部完成后执行系统 Home，并在起点进入后台后调用 `killBackgroundProcesses` 请求关闭其后台进程。
 
-实现：`AccessibilityBridgeImpl` 通过 `QidianAccessibilityService` 操作系统能力。
+实现：`AccessibilityBridgeImpl` 通过 `QidianAccessibilityService` 操作系统能力。启动/重启目标 App 优先使用已连接的无障碍服务作为 Context，降低定时 Worker 从普通后台 Context 启动 Activity 被 Android 限制的概率。
+
+Android 普通应用无法像 root/ADB 一样强制停止另一个前台 App。成功收尾时先通过无障碍确定返回桌面，等待起点进入后台后再调用系统允许的后台进程关闭接口。
 
 注意：起点 App 部分页面是 H5、自绘或 TextureView 渲染层，不暴露 DOM、按钮或文字给 Android Accessibility。福利中心页主要依赖截图 OCR 和图像模板匹配。
 
@@ -337,6 +343,32 @@ QidianPartialCheckInFlow(
 - `CheckInWorker`：后台触发 `AutomationController.run(AutomationTrigger.Scheduled)`。
 
 当前自动任务入口会调用同一套自动化流程。后续如果要区分手动和定时行为，在 `AutomationTrigger` 和 `AutomationController` 层扩展。
+
+### 定时触发实现
+
+此前只使用带初始延迟的 OneTime WorkManager。WorkManager 的语义是“满足系统条件后执行”，不保证在用户设置的分钟准时运行；息屏、Doze、后台限制和厂商省电策略都可能造成明显延迟。
+
+当前改为双通道：
+
+- 主通道：`AlarmManager` 在目标时间发送显式广播给 `ScheduleReceiver`，接收器立即提交 `CheckInWorker`。
+- 精确定时：Android 12 及以上在取得 `SCHEDULE_EXACT_ALARM` 特殊权限后使用 `setExactAndAllowWhileIdle`；未授权时使用 `setAndAllowWhileIdle`，可能被系统延迟。
+- 补偿通道：同时安排设定时间后 15 分钟的 OneTime WorkManager。若主闹钟没有正常提交任务，补偿任务仍会尝试运行。
+- 每次闹钟触发或 Worker 正常结束后安排下一天任务。
+- `BOOT_COMPLETED`、`MY_PACKAGE_REPLACED`、`TIME_SET` 和 `TIMEZONE_CHANGED` 会触发重新安排，处理重启、升级和系统时间变化。
+- 保存每日自动任务和 Activity 恢复前台时也会重新核对安排。
+- `CheckInWorker` 会记录触发来源 `alarm` 或 `work_fallback`，方便从日志判断是哪条通道执行。
+- `CheckInWorker` 启动后调用 `setForeground()`，使用 `specialUse` 类型的 WorkManager 前台服务和低重要性常驻通知执行长任务，避免普通 Worker 约 10 分钟执行上限截断最长 15 分钟的自动化流程。
+
+注意：精确定时权限只决定到点唤醒精度。无障碍服务仍必须保持启用，系统/厂商的应用自启动和后台运行限制也可能影响 Worker；补偿通道用于降低这种风险，但不能绕过系统明确禁止的后台运行策略。
+
+### 成功收尾
+
+`AutomationController` 只有在 `FlowExecutionResult.completed = true` 时调用 `closeTargetAppAndGoHome()`：
+
+- 先通过无障碍执行 `GLOBAL_ACTION_HOME` 返回桌面。
+- 等待 600 ms，让起点进入后台。
+- 调用 `killBackgroundProcesses(com.qidian.QDReader)` 请求关闭后台进程。
+- 收尾失败只记录日志，不把已经完成的福利任务改判为失败，也不会触发任务重跑。
 
 ## 构建和发布
 

@@ -79,6 +79,7 @@ data class DashboardState(
     val notificationGranted: Boolean,
     val targetInstalled: Boolean,
     val serviceConnected: Boolean,
+    val exactAlarmAllowed: Boolean,
     val currentPackageName: String?,
     val scheduleConfig: ScheduleConfig
 )
@@ -109,6 +110,9 @@ class MainActivity : ComponentActivity() {
 
                 LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
                     refresh()
+                    if (scheduleRepository.load().enabled) {
+                        SchedulePlanner.reschedule(activity)
+                    }
                 }
 
                 LaunchedEffect(Unit) {
@@ -142,6 +146,9 @@ class MainActivity : ComponentActivity() {
                         AppLogStore.add("保存每日自动任务时间：${config.label()}，启用=${config.enabled}")
                         refresh()
                     },
+                    onOpenExactAlarmSettings = {
+                        DeviceStatus.openExactAlarmSettings(activity)
+                    },
                     onClearLogs = {
                         AppLogStore.clear()
                     }
@@ -161,6 +168,7 @@ private fun loadDashboardState(
         notificationGranted = DeviceStatus.hasNotificationPermission(context),
         targetInstalled = DeviceStatus.isTargetAppInstalled(context),
         serviceConnected = bridge.isServiceConnected(),
+        exactAlarmAllowed = DeviceStatus.canScheduleExactAlarms(context),
         currentPackageName = bridge.currentPackageName(),
         scheduleConfig = scheduleRepository.load()
     )
@@ -175,6 +183,7 @@ private fun DashboardScreen(
     onRefresh: () -> Unit,
     onRunAutomation: () -> Unit,
     onSaveSchedule: (ScheduleConfig) -> Unit,
+    onOpenExactAlarmSettings: () -> Unit,
     onClearLogs: () -> Unit
 ) {
     Scaffold(
@@ -206,9 +215,11 @@ private fun DashboardScreen(
             item {
                 AutomationPanel(
                     config = state.scheduleConfig,
+                    exactAlarmAllowed = state.exactAlarmAllowed,
                     runOutput = runOutput,
                     onRunAutomation = onRunAutomation,
-                    onSaveSchedule = onSaveSchedule
+                    onSaveSchedule = onSaveSchedule,
+                    onOpenExactAlarmSettings = onOpenExactAlarmSettings
                 )
             }
             item { LogsPanel(logs = logs, onClearLogs = onClearLogs) }
@@ -358,9 +369,11 @@ private fun BookLogo(modifier: Modifier = Modifier) {
 @Composable
 private fun AutomationPanel(
     config: ScheduleConfig,
+    exactAlarmAllowed: Boolean,
     runOutput: String,
     onRunAutomation: () -> Unit,
-    onSaveSchedule: (ScheduleConfig) -> Unit
+    onSaveSchedule: (ScheduleConfig) -> Unit,
+    onOpenExactAlarmSettings: () -> Unit
 ) {
     var enabled by remember(config) { mutableStateOf(config.enabled) }
     var hourText by remember(config) { mutableStateOf("%02d".format(config.hour)) }
@@ -387,6 +400,33 @@ private fun AutomationPanel(
             value = config.label(),
             trailing = { Switch(checked = enabled, onCheckedChange = { enabled = it }) }
         )
+
+        if (enabled && !exactAlarmAllowed) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFFFFF5F5))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "精确定时未授权，系统可能延迟运行",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = DarkRed
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                OutlinedButton(
+                    onClick = onOpenExactAlarmSettings,
+                    modifier = Modifier.height(36.dp),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("授权")
+                }
+            }
+        }
 
         Row(
             modifier = Modifier.fillMaxWidth(),

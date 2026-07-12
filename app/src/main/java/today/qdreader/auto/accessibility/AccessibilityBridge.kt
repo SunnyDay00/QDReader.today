@@ -35,4 +35,5 @@ interface AccessibilityBridge {
     fun launchTargetApp(): Boolean
     fun restartTargetApp(): Boolean
     fun launchAutomationApp(): Boolean
+    suspend fun closeTargetAppAndGoHome(): Result<Unit>
 }

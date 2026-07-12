@@ -3,6 +3,7 @@ package today.qdreader.auto.accessibility
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.graphics.Bitmap
+import kotlinx.coroutines.delay
 import today.qdreader.auto.core.DeviceStatus
 
 class AccessibilityBridgeImpl(
@@ -49,9 +50,25 @@ class AccessibilityBridgeImpl(
         return service?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK) == true
     }
 
-    override fun launchTargetApp(): Boolean = DeviceStatus.openTargetApp(context)
+    override fun launchTargetApp(): Boolean = DeviceStatus.openTargetApp(service ?: context)
 
-    override fun restartTargetApp(): Boolean = DeviceStatus.restartTargetApp(context)
+    override fun restartTargetApp(): Boolean = DeviceStatus.restartTargetApp(service ?: context)
 
-    override fun launchAutomationApp(): Boolean = DeviceStatus.openAutomationApp(context)
+    override fun launchAutomationApp(): Boolean = DeviceStatus.openAutomationApp(service ?: context)
+
+    override suspend fun closeTargetAppAndGoHome(): Result<Unit> = runCatching {
+        val activeService = service
+            ?: error("无障碍服务未连接，无法返回桌面")
+        check(activeService.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)) {
+            "返回桌面动作执行失败"
+        }
+        delay(HOME_SETTLE_DELAY_MILLIS)
+        check(DeviceStatus.closeTargetApp(context)) {
+            "关闭起点读书后台进程失败"
+        }
+    }
+
+    companion object {
+        private const val HOME_SETTLE_DELAY_MILLIS = 600L
+    }
 }
