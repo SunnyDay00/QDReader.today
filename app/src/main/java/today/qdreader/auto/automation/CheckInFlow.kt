@@ -315,6 +315,7 @@ class QidianPartialCheckInFlow(
                 return restartableFailure("福利任务“${task.title}”超过 ${TASK_ATTEMPT_TIMEOUT_MILLIS / 60_000} 分钟仍未结束，按步骤卡住处理")
             }
 
+            clearRewardDialogBeforeTaskAction(bridge, executor)
             val action = findTaskActionOnCurrentScreen(task, bridge)
                 ?: return restartableFailure("OCR 未找到“${task.title}”后面的“去完成 / 已领取”状态")
 
@@ -417,14 +418,9 @@ class QidianPartialCheckInFlow(
         AppLogStore.add("步骤 11：检查奖励确认弹窗")
         val rewardDialogHandled = tapRewardConfirmIfPresent(bridge, executor)
         if (rewardDialogHandled) {
-            delay(900)
+            AppLogStore.add("奖励确认弹窗已消失，允许重新检查任务状态")
         } else {
-            AppLogStore.add("未检测到奖励确认弹窗文字，仍按确认按钮常见位置兜底点击一次")
-            val recovered = tapInferredRewardConfirmAndVerify(task, bridge, executor)
-            if (!recovered) {
-                return restartableFailure("“${task.title}”第 $round 轮关闭广告后无法确认奖励弹窗已关闭")
-            }
-            delay(900)
+            AppLogStore.add("未识别到“知道了”或奖励弹窗；下一步先再次检查弹窗，仍找不到才点击“去完成”")
         }
 
         return FlowExecutionResult(true, "“${task.title}”第 $round 轮广告奖励已处理")
@@ -436,31 +432,47 @@ class QidianPartialCheckInFlow(
     ): Boolean {
         val dialog = waitForRewardConfirmDialog(bridge, timeoutMillis = REWARD_CONFIRM_TIMEOUT_MILLIS)
             ?: return false
-        val knowPoint = dialog.ocr.findAnyTextCenter(KNOW_BUTTON_TEXTS)
-        val tapPoint = knowPoint ?: dialog.inferRewardConfirmButtonPoint()
-        executor.execute(AutomationAction.TapPoint(tapPoint)).getOrThrow()
-
-        if (knowPoint != null) {
-            AppLogStore.add("已识别并点击“知道了”")
-        } else {
-            AppLogStore.add("奖励弹窗识别到奖励文案但未定位“知道了”，已点击弹窗确认按钮兜底坐标")
-        }
-        return true
+        return dismissRewardConfirmDialog(dialog, bridge, executor)
     }
 
-    private suspend fun tapInferredRewardConfirmAndVerify(
-        task: WelfareAdTask,
+    private suspend fun clearRewardDialogBeforeTaskAction(
+        bridge: AccessibilityBridge,
+        executor: ActionExecutor
+    ) {
+        val screen = captureOcrScreen(bridge).getOrNull() ?: return
+        if (!screen.hasRewardConfirmDialogMarkers()) return
+
+        AppLogStore.add("点击任务按钮前检测到残留奖励弹窗，优先查找并点击“知道了”")
+        if (!dismissRewardConfirmDialog(screen, bridge, executor)) {
+            AppLogStore.add("奖励弹窗连续处理仍未确认消失；按规则重新识别当前任务，找不到弹窗时才点击“去完成”")
+        }
+    }
+
+    private suspend fun dismissRewardConfirmDialog(
+        initialScreen: OcrScreen,
         bridge: AccessibilityBridge,
         executor: ActionExecutor
     ): Boolean {
-        val screen = captureOcrScreen(bridge).getOrNull() ?: return false
-        AppLogStore.add("按奖励弹窗确认按钮常见位置兜底点击，防止弹窗遮挡背景任务列表")
-        executor.execute(AutomationAction.TapPoint(screen.inferRewardConfirmButtonPoint())).getOrThrow()
-        delay(1_000)
-        val action = findTaskActionOnCurrentScreen(task, bridge)
-        if (action != null) {
-            AppLogStore.add("奖励确认兜底点击后已恢复任务列表，当前状态：${action.actionText}")
-            return true
+        var screen = initialScreen
+        for (attempt in 1..REWARD_CONFIRM_MAX_TAP_ATTEMPTS) {
+            val knowPoint = screen.ocr.findAnyTextCenter(KNOW_BUTTON_TEXTS)
+            val tapPoint = knowPoint ?: screen.inferRewardConfirmButtonPoint()
+            executor.execute(AutomationAction.TapPoint(tapPoint)).getOrThrow()
+
+            if (knowPoint != null) {
+                AppLogStore.add("已识别并点击“知道了”（$attempt/$REWARD_CONFIRM_MAX_TAP_ATTEMPTS）")
+            } else {
+                AppLogStore.add("识别到奖励弹窗但未定位“知道了”，点击确认按钮兜底坐标（$attempt/$REWARD_CONFIRM_MAX_TAP_ATTEMPTS）")
+            }
+
+            delay(REWARD_CONFIRM_DISMISS_VERIFY_DELAY_MILLIS)
+            val nextScreen = captureOcrScreen(bridge).getOrNull() ?: return true
+            if (!nextScreen.hasRewardConfirmDialogMarkers()) {
+                AppLogStore.add("已确认奖励弹窗消失")
+                return true
+            }
+            AppLogStore.add("奖励弹窗仍存在，继续优先点击“知道了”")
+            screen = nextScreen
         }
         return false
     }
@@ -474,11 +486,7 @@ class QidianPartialCheckInFlow(
         while (System.currentTimeMillis() < deadline) {
             val screen = captureOcrScreen(bridge).getOrNull()
             if (screen != null) {
-                if (
-                    screen.ocr.findAnyTextCenter(KNOW_BUTTON_TEXTS) != null ||
-                    screen.ocr.hasAnyText(REWARD_DIALOG_STRONG_TEXTS) ||
-                    screen.findCenteredRewardConfirmTextPoint() != null
-                ) {
+                if (screen.hasRewardConfirmDialogMarkers()) {
                     AppLogStore.add("OCR 已识别：奖励确认弹窗，预览：${screen.ocr.logPreview()}")
                     return screen
                 }
@@ -491,6 +499,12 @@ class QidianPartialCheckInFlow(
             AppLogStore.add("奖励确认弹窗 OCR 未命中，最近预览：$lastPreview")
         }
         return null
+    }
+
+    private fun OcrScreen.hasRewardConfirmDialogMarkers(): Boolean {
+        return ocr.findAnyTextCenter(KNOW_BUTTON_TEXTS) != null ||
+            findCenteredRewardStrongTextPoint() != null ||
+            findCenteredRewardConfirmTextPoint() != null
     }
 
     private suspend fun openBrowseDialogWithRetry(
@@ -913,7 +927,7 @@ class QidianPartialCheckInFlow(
     }
 
     private fun OcrScreen.inferRewardConfirmButtonPoint(): ScreenPoint {
-        val rewardTextPoint = ocr.findAnyTextCenter(REWARD_DIALOG_STRONG_TEXTS)
+        val rewardTextPoint = findCenteredRewardStrongTextPoint()
             ?: findCenteredRewardConfirmTextPoint()
         if (rewardTextPoint != null) {
             return ScreenPoint(rewardTextPoint.x, rewardTextPoint.y + height * 0.11f)
@@ -921,9 +935,25 @@ class QidianPartialCheckInFlow(
         return ScreenPoint(width * 0.5f, height * 0.625f)
     }
 
+    private fun OcrScreen.findCenteredRewardStrongTextPoint(): ScreenPoint? {
+        val minX = width * 0.15f
+        val maxX = width * 0.85f
+        val minY = height * 0.28f
+        val maxY = height * 0.68f
+        return REWARD_DIALOG_STRONG_TEXTS
+            .flatMap { text -> ocr.findBlocksContaining(text) }
+            .mapNotNull { block -> block.bounds }
+            .filter { bounds ->
+                bounds.exactCenterX() in minX..maxX &&
+                    bounds.exactCenterY() in minY..maxY
+            }
+            .minByOrNull { bounds -> bounds.top * width + bounds.left }
+            ?.let { bounds -> ScreenPoint(bounds.exactCenterX(), bounds.exactCenterY()) }
+    }
+
     private fun OcrScreen.findCenteredRewardConfirmTextPoint(): ScreenPoint? {
-        val minX = width * 0.18f
-        val maxX = width * 0.82f
+        val minX = width * 0.28f
+        val maxX = width * 0.72f
         val minY = height * 0.38f
         val maxY = height * 0.60f
         return REWARD_DIALOG_FALLBACK_TEXTS
@@ -957,6 +987,8 @@ class QidianPartialCheckInFlow(
         private const val AD_ENTRY_VERIFY_TIMEOUT_MILLIS = 6_000L
         private const val BROWSE_DIALOG_VERIFY_TIMEOUT_MILLIS = 5_000L
         private const val REWARD_CONFIRM_TIMEOUT_MILLIS = 10_000L
+        private const val REWARD_CONFIRM_MAX_TAP_ATTEMPTS = 3
+        private const val REWARD_CONFIRM_DISMISS_VERIFY_DELAY_MILLIS = 900L
         private const val GO_COMPLETE_TO_REWARD_CONFIRM_TIMEOUT_MILLIS = 60_000L
         private const val GO_COMPLETE_STILL_VISIBLE_WINDOW_MILLIS = 60_000L
         private const val MAX_GO_COMPLETE_STILL_VISIBLE_ATTEMPTS = 6
