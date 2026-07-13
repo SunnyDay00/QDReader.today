@@ -7,22 +7,17 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import today.qdreader.auto.accessibility.ScreenPoint
 import today.qdreader.auto.accessibility.AccessibilityBridge
+import today.qdreader.auto.accessibility.UiNodeSnapshot
 import today.qdreader.auto.accessibility.UiTreeSnapshot
 import today.qdreader.auto.accessibility.clickPointFor
 import today.qdreader.auto.accessibility.findNode
+import today.qdreader.auto.accessibility.flatten
 import today.qdreader.auto.accessibility.hasNode
 import today.qdreader.auto.core.AppConstants
 import today.qdreader.auto.logs.AppLogStore
-import today.qdreader.auto.vision.CloseButtonDetector
-import today.qdreader.auto.vision.CloseButtonMatch
-import today.qdreader.auto.vision.OcrActionTextMatch
 import today.qdreader.auto.vision.OcrEngine
 import today.qdreader.auto.vision.OcrResult
-import today.qdreader.auto.vision.findActionAfterAnyText
 import today.qdreader.auto.vision.findAnyTextCenter
-import today.qdreader.auto.vision.findBlocksContaining
-import today.qdreader.auto.vision.findTextCenter
-import today.qdreader.auto.vision.hasText
 import today.qdreader.auto.vision.hasAnyText
 import kotlin.math.abs
 
@@ -79,8 +74,7 @@ class PlaceholderCheckInFlow : CheckInFlow {
 }
 
 class QidianPartialCheckInFlow(
-    private val ocrEngine: OcrEngine,
-    private val closeButtonDetector: CloseButtonDetector
+    private val ocrEngine: OcrEngine
 ) : CheckInFlow, AutoCloseable {
     override suspend fun run(
         bridge: AccessibilityBridge,
@@ -109,13 +103,13 @@ class QidianPartialCheckInFlow(
         val welfareCenter = tapWelfareCenterWithRetry(bridge, executor)
             ?: return restartableFailure("连续点击“福利中心”$MAX_CLICK_ATTEMPTS 次后仍未进入福利中心界面")
 
-        AppLogStore.add("步骤 5：OCR 已确认福利中心，命中：${welfareCenter.ocr.welfareCenterMarkerSummary()}")
+        AppLogStore.add("步骤 5：组件已确认福利中心，命中“本周收益”和“积分商城”")
 
         AppLogStore.add("步骤 6：上滑福利中心页面，仅执行一次")
         executor.execute(welfareCenter.upSwipeAction()).getOrThrow()
         delay(900)
 
-        AppLogStore.add("步骤 7-13：开始按 OCR 处理广告奖励任务")
+        AppLogStore.add("步骤 7-13：开始按组件处理广告奖励任务")
         var successfulTaskCount = 0
         for (task in WELFARE_AD_TASKS) {
             val taskResult = completeWelfareAdTask(task, bridge, executor)
@@ -201,7 +195,7 @@ class QidianPartialCheckInFlow(
     private suspend fun tapWelfareCenterWithRetry(
         bridge: AccessibilityBridge,
         executor: ActionExecutor
-    ): OcrScreen? {
+    ): UiTreeSnapshot? {
         for (attempt in 1..MAX_CLICK_ATTEMPTS) {
             val stableEntry = waitForStableWelfareEntry(bridge)
             if (stableEntry == null) {
@@ -230,7 +224,7 @@ class QidianPartialCheckInFlow(
             }
 
             if (attempt < MAX_CLICK_ATTEMPTS) {
-                AppLogStore.add("点击“福利中心”后 10 秒仍未确认进入，开始恢复“我的”界面")
+                AppLogStore.add("点击“福利中心”后未同时找到“本周收益”和“积分商城”，开始恢复“我的”界面")
                 if (!recoverMyPageAfterWelfareMiss(bridge, executor)) {
                     AppLogStore.add("未能恢复到“我的”界面")
                     return null
@@ -315,7 +309,7 @@ class QidianPartialCheckInFlow(
 
             clearRewardDialogBeforeTaskAction(bridge, executor)
             val action = findTaskActionOnCurrentScreen(task, bridge)
-                ?: return restartableFailure("OCR 未找到“${task.title}”后面的“去完成 / 已领取”状态")
+                ?: return restartableFailure("组件树未找到“${task.title}”同一任务行内的“去完成 / 已领取”状态")
 
             when {
                 action.actionText in TASK_DONE_TEXTS -> {
@@ -323,10 +317,10 @@ class QidianPartialCheckInFlow(
                     return FlowExecutionResult(true, "福利任务“${task.title}”已领取")
                 }
 
-                action.isGoComplete() -> {
+                action.actionText == GO_COMPLETE_TEXT -> {
                     round += 1
                     AppLogStore.add("福利任务“${task.title}”当前仍是“去完成”，继续执行第 $round 轮")
-                    val adResult = completeAdRewardRound(task, round, action, bridge, executor)
+                    val adResult = completeAdRewardRound(task, round, bridge, executor)
                     if (!adResult.completed) {
                         return adResult
                     }
@@ -341,24 +335,18 @@ class QidianPartialCheckInFlow(
     private suspend fun findTaskActionOnCurrentScreen(
         task: WelfareAdTask,
         bridge: AccessibilityBridge
-    ): OcrActionTextMatch? {
+    ): TaskComponentMatch? {
         repeat(TASK_STATUS_POLL_ATTEMPTS) { index ->
-            val screen = captureOcrScreen(bridge).getOrNull()
-            val action = screen?.ocr?.findActionAfterAnyText(task.matchTexts, TASK_ACTION_TEXTS)
-                ?: screen?.findTaskActionByRowFallback(task)
+            val tree = bridge.readActiveWindow()
+            val action = tree?.findTaskAction(task)
             if (action != null) {
-                AppLogStore.add("OCR 已定位“${task.title}”状态：${action.actionText}")
+                AppLogStore.add("组件已定位“${task.title}”状态：${action.actionText}")
                 return action
             }
 
             if (index < TASK_STATUS_POLL_ATTEMPTS - 1) {
-                AppLogStore.add("当前屏未找到“${task.title}”，不额外上滑，仅等待后重试 OCR")
-                delay(600)
-            } else if (screen != null) {
-                AppLogStore.add(
-                    "OCR 匹配失败：“${task.title}”；锚点=${screen.ocr.hasAnyText(task.matchTexts)}，状态=${screen.ocr.hasAnyText(TASK_ACTION_TEXTS)}"
-                )
-                AppLogStore.add("OCR 文本预览：${screen.ocr.logPreview()}")
+                AppLogStore.add("当前组件树未找到“${task.title}”任务状态，等待 WebView 稳定后重试")
+                delay(COMPONENT_POLL_INTERVAL_MILLIS)
             }
         }
         return null
@@ -367,13 +355,12 @@ class QidianPartialCheckInFlow(
     private suspend fun completeAdRewardRound(
         task: WelfareAdTask,
         round: Int,
-        initialAction: OcrActionTextMatch,
         bridge: AccessibilityBridge,
         executor: ActionExecutor
     ): FlowExecutionResult {
         return try {
             withTimeout(GO_COMPLETE_TO_REWARD_CONFIRM_TIMEOUT_MILLIS) {
-                completeAdRewardRoundWithinWatchdog(task, round, initialAction, bridge, executor)
+                completeAdRewardRoundWithinWatchdog(task, round, bridge, executor)
             }
         } catch (exception: TimeoutCancellationException) {
             restartableFailure("“${task.title}”第 $round 轮点击“去完成”后 ${GO_COMPLETE_TO_REWARD_CONFIRM_TIMEOUT_MILLIS / 1_000} 秒内未完成“知道了”确认，按卡住处理")
@@ -383,19 +370,21 @@ class QidianPartialCheckInFlow(
     private suspend fun completeAdRewardRoundWithinWatchdog(
         task: WelfareAdTask,
         round: Int,
-        initialAction: OcrActionTextMatch,
         bridge: AccessibilityBridge,
         executor: ActionExecutor
     ): FlowExecutionResult {
         AppLogStore.add("步骤 8：点击“去完成”并验证广告界面")
-        val initialCloseMatch = tapGoCompleteAndWaitForAd(task, round, initialAction, bridge, executor)
-            ?: return restartableFailure("“${task.title}”第 $round 轮未识别到广告页右上角关闭按钮")
+        val initialCloseMatch = tapGoCompleteAndWaitForAd(task, round, bridge, executor)
+            ?: return restartableFailure("“${task.title}”第 $round 轮未找到广告页右上角关闭组件")
 
         AppLogStore.add("步骤 9：关闭广告并等待“点击去浏览 / 放弃奖励”弹窗")
-        val browseDialog = openBrowseDialogWithRetry(task, round, initialCloseMatch, bridge, executor)
+        openBrowseDialogWithRetry(task, round, initialCloseMatch, bridge, executor)
             ?: return restartableFailure("“${task.title}”第 $round 轮未识别到“点击去浏览”弹窗")
 
-        val browsePoint = browseDialog.findBrowseActionPoint()
+        delay(COMPONENT_CLICK_DEBOUNCE_MILLIS)
+        val refreshedBrowseDialog = captureOcrScreen(bridge).getOrNull()
+            ?: return restartableFailure("“${task.title}”第 $round 轮点击“点击去浏览”前无法刷新界面")
+        val browsePoint = refreshedBrowseDialog.findBrowseActionPoint()
             ?: return restartableFailure("“${task.title}”第 $round 轮未定位到“点击去浏览”坐标")
         executor.execute(AutomationAction.TapPoint(browsePoint)).getOrThrow()
         AppLogStore.add("已点击“点击去浏览”")
@@ -411,15 +400,16 @@ class QidianPartialCheckInFlow(
         AppLogStore.add("已返回广告界面，准备再次关闭广告")
         delay(1_000)
         tapCloseButtonOrFail(bridge, executor, "广告奖励完成后")
-            ?: return restartableFailure("“${task.title}”第 $round 轮返回后未识别到广告关闭按钮")
+            ?: return restartableFailure("“${task.title}”第 $round 轮返回后未找到广告关闭组件")
 
         AppLogStore.add("步骤 11：检查奖励确认弹窗")
         val rewardDialogHandled = tapRewardConfirmIfPresent(bridge, executor)
         if (rewardDialogHandled) {
             AppLogStore.add("奖励确认弹窗已消失，允许重新检查任务状态")
         } else {
-            AppLogStore.add("未识别到“知道了”或奖励弹窗，直接点击“知道了”固定兜底位置")
-            tapDefaultRewardConfirm(bridge, executor)
+            return restartableFailure(
+                "“${task.title}”第 $round 轮未找到同时包含“恭喜获得”和“知道了”的奖励弹窗组件"
+            )
         }
 
         return FlowExecutionResult(true, "“${task.title}”第 $round 轮广告奖励已处理")
@@ -429,126 +419,78 @@ class QidianPartialCheckInFlow(
         bridge: AccessibilityBridge,
         executor: ActionExecutor
     ): Boolean {
-        val dialog = waitForRewardConfirmDialog(bridge, timeoutMillis = REWARD_CONFIRM_TIMEOUT_MILLIS)
+        waitForRewardConfirmDialog(bridge, timeoutMillis = REWARD_CONFIRM_TIMEOUT_MILLIS)
             ?: return false
-        return dismissRewardConfirmDialog(dialog, bridge, executor)
+        return dismissRewardConfirmDialog(bridge, executor)
     }
 
     private suspend fun clearRewardDialogBeforeTaskAction(
         bridge: AccessibilityBridge,
         executor: ActionExecutor
     ) {
-        val screen = captureOcrScreen(bridge).getOrNull() ?: return
-        if (!screen.hasRewardConfirmDialogMarkers()) return
+        bridge.readActiveWindow()?.findRewardConfirmDialog() ?: return
 
-        AppLogStore.add("点击任务按钮前检测到残留奖励弹窗，优先查找并点击“知道了”")
-        if (!dismissRewardConfirmDialog(screen, bridge, executor)) {
+        AppLogStore.add("点击任务按钮前通过组件检测到残留奖励弹窗，优先点击同组内的“知道了”")
+        if (!dismissRewardConfirmDialog(bridge, executor)) {
             AppLogStore.add("奖励弹窗连续处理仍未确认消失；按规则重新识别当前任务，找不到弹窗时才点击“去完成”")
         }
     }
 
     private suspend fun dismissRewardConfirmDialog(
-        initialScreen: OcrScreen,
         bridge: AccessibilityBridge,
         executor: ActionExecutor
     ): Boolean {
-        var screen = initialScreen
         for (attempt in 1..REWARD_CONFIRM_MAX_TAP_ATTEMPTS) {
-            val knowMatch = KNOW_BUTTON_TEXTS.firstNotNullOfOrNull { text ->
-                screen.ocr.findTextCenter(text)?.let { point -> text to point }
-            }
-            val knowPoint = knowMatch?.second
-            val tapPoint = knowPoint ?: screen.inferRewardConfirmButtonPoint()
+            delay(COMPONENT_CLICK_DEBOUNCE_MILLIS)
+            val dialog = bridge.readActiveWindow()?.findRewardConfirmDialog() ?: return true
+            val tapPoint = dialog.tree.clickPointFor(dialog.confirmNode)
             executor.execute(AutomationAction.TapPoint(tapPoint)).getOrThrow()
-
-            if (knowPoint != null) {
-                AppLogStore.add(
-                    "已识别并点击“${knowMatch?.first ?: KNOW_TEXT}”，坐标=(${knowPoint.x.toInt()},${knowPoint.y.toInt()})" +
-                        "（$attempt/$REWARD_CONFIRM_MAX_TAP_ATTEMPTS）"
-                )
-            } else {
-                AppLogStore.add("识别到奖励弹窗但未定位“知道了”，点击确认按钮兜底坐标（$attempt/$REWARD_CONFIRM_MAX_TAP_ATTEMPTS）")
-            }
+            AppLogStore.add(
+                "已点击“${dialog.confirmNode.text ?: KNOW_TEXT}”组件，且同组包含“${dialog.rewardNode.text}”" +
+                    "（$attempt/$REWARD_CONFIRM_MAX_TAP_ATTEMPTS）"
+            )
 
             delay(REWARD_CONFIRM_DISMISS_VERIFY_DELAY_MILLIS)
-            val nextScreen = captureOcrScreen(bridge).getOrNull() ?: return true
-            if (!nextScreen.hasRewardConfirmDialogMarkers()) {
+            if (bridge.readActiveWindow()?.findRewardConfirmDialog() == null) {
                 AppLogStore.add("已确认奖励弹窗消失")
                 return true
             }
-            AppLogStore.add("奖励弹窗仍存在，继续优先点击“知道了”")
-            screen = nextScreen
+            AppLogStore.add("奖励弹窗组件仍存在，继续点击同组内的“知道了”")
         }
         return false
-    }
-
-    private suspend fun tapDefaultRewardConfirm(
-        bridge: AccessibilityBridge,
-        executor: ActionExecutor
-    ) {
-        val bitmap = bridge.captureScreenshot().getOrNull()
-        val treeBounds = bridge.readActiveWindow()?.root?.bounds
-        val width = bitmap?.width ?: treeBounds?.width() ?: 0
-        val height = bitmap?.height ?: treeBounds?.height() ?: 0
-        bitmap?.recycle()
-        if (width <= 0 || height <= 0) {
-            AppLogStore.add("奖励确认固定兜底失败：无法获取当前屏幕尺寸")
-            return
-        }
-        val point = ScreenPoint(
-            x = width * DEFAULT_REWARD_CONFIRM_X_FRACTION,
-            y = height * DEFAULT_REWARD_CONFIRM_Y_FRACTION
-        )
-        executor.execute(AutomationAction.TapPoint(point)).getOrThrow()
-        AppLogStore.add("已点击“知道了”固定兜底坐标=(${point.x.toInt()},${point.y.toInt()})")
-        delay(REWARD_CONFIRM_DISMISS_VERIFY_DELAY_MILLIS)
     }
 
     private suspend fun waitForRewardConfirmDialog(
         bridge: AccessibilityBridge,
         timeoutMillis: Long
-    ): OcrScreen? {
+    ): RewardConfirmComponent? {
         val deadline = System.currentTimeMillis() + timeoutMillis
-        var lastPreview = ""
         while (System.currentTimeMillis() < deadline) {
-            val screen = captureOcrScreen(bridge).getOrNull()
-            if (screen != null) {
-                if (screen.hasRewardConfirmDialogMarkers()) {
-                    AppLogStore.add("OCR 已识别：奖励确认弹窗，预览：${screen.ocr.logPreview()}")
-                    return screen
-                }
-                lastPreview = screen.ocr.logPreview()
+            val dialog = bridge.readActiveWindow()?.findRewardConfirmDialog()
+            if (dialog != null) {
+                AppLogStore.add("组件已识别：奖励确认弹窗“${dialog.rewardNode.text}”及同组“${dialog.confirmNode.text}”")
+                return dialog
             }
-            delay(600)
-        }
-
-        if (lastPreview.isNotBlank()) {
-            AppLogStore.add("奖励确认弹窗 OCR 未命中，最近预览：$lastPreview")
+            delay(COMPONENT_POLL_INTERVAL_MILLIS)
         }
         return null
-    }
-
-    private fun OcrScreen.hasRewardConfirmDialogMarkers(): Boolean {
-        return ocr.findAnyTextCenter(KNOW_BUTTON_TEXTS) != null ||
-            findCenteredRewardStrongTextPoint() != null ||
-            findCenteredRewardConfirmTextPoint() != null
     }
 
     private suspend fun openBrowseDialogWithRetry(
         task: WelfareAdTask,
         round: Int,
-        initialCloseMatch: CloseButtonMatch,
+        initialCloseMatch: AdCloseComponent,
         bridge: AccessibilityBridge,
         executor: ActionExecutor
     ): OcrScreen? {
-        var closeMatch: CloseButtonMatch? = initialCloseMatch
+        var closeMatch: AdCloseComponent? = initialCloseMatch
         for (attempt in 1..MAX_CLICK_ATTEMPTS) {
-            val activeCloseMatch = closeMatch ?: waitForCloseButton(bridge, timeoutMillis = SHORT_VERIFY_TIMEOUT_MILLIS)
+            val activeCloseMatch = closeMatch ?: waitForAdCloseButton(bridge, timeoutMillis = SHORT_VERIFY_TIMEOUT_MILLIS)
             if (activeCloseMatch == null) {
-                AppLogStore.add("第 $attempt/$MAX_CLICK_ATTEMPTS 次打开浏览弹窗前未找到广告关闭按钮")
+                AppLogStore.add("第 $attempt/$MAX_CLICK_ATTEMPTS 次打开浏览弹窗前未找到 content-desc=“$AD_CLOSE_CONTENT_DESCRIPTION”的组件")
                 logCurrentOcrPreview("浏览弹窗关闭按钮缺失", bridge)
             } else {
-                tapDetectedCloseButton(activeCloseMatch, executor, "广告奖励选择前 $attempt/$MAX_CLICK_ATTEMPTS")
+                tapAdCloseComponent(bridge, executor, "广告奖励选择前 $attempt/$MAX_CLICK_ATTEMPTS")
             }
 
             val browseDialog = waitForOcr(bridge, "点击去浏览弹窗", timeoutMillis = BROWSE_DIALOG_VERIFY_TIMEOUT_MILLIS) { ocr ->
@@ -569,7 +511,7 @@ class QidianPartialCheckInFlow(
             if (attempt < MAX_CLICK_ATTEMPTS) {
                 AppLogStore.add("未识别到“点击去浏览”弹窗，等待后重试关闭按钮")
                 delay(RETRY_DELAY_MILLIS)
-                closeMatch = waitForCloseButton(bridge, timeoutMillis = SHORT_VERIFY_TIMEOUT_MILLIS)
+                closeMatch = waitForAdCloseButton(bridge, timeoutMillis = SHORT_VERIFY_TIMEOUT_MILLIS)
             }
         }
         return null
@@ -578,28 +520,34 @@ class QidianPartialCheckInFlow(
     private suspend fun tapGoCompleteAndWaitForAd(
         task: WelfareAdTask,
         round: Int,
-        initialAction: OcrActionTextMatch,
         bridge: AccessibilityBridge,
         executor: ActionExecutor
-    ): CloseButtonMatch? {
-        var action = initialAction
+    ): AdCloseComponent? {
         var attempt = 0
         val startedAtMillis = System.currentTimeMillis()
         while (true) {
             attempt += 1
             AppLogStore.add("福利任务“${task.title}”：第 $round 轮点击“去完成”（第 $attempt 次）")
-            executor.execute(AutomationAction.TapPoint(action.point)).getOrThrow()
+            delay(COMPONENT_CLICK_DEBOUNCE_MILLIS)
+            val refreshedBeforeTap = bridge.readActiveWindow()?.findTaskAction(task)
+            if (refreshedBeforeTap?.actionText != GO_COMPLETE_TEXT) {
+                AppLogStore.add("防抖后“${task.title}”的“去完成”组件已刷新或消失，停止点击旧位置")
+                return null
+            }
+            executor.execute(
+                AutomationAction.TapPoint(refreshedBeforeTap.tree.clickPointFor(refreshedBeforeTap.actionNode))
+            ).getOrThrow()
 
-            val closeMatch = waitForCloseButton(bridge, timeoutMillis = AD_ENTRY_VERIFY_TIMEOUT_MILLIS)
+            val closeMatch = waitForAdCloseButton(bridge, timeoutMillis = AD_ENTRY_VERIFY_TIMEOUT_MILLIS)
             if (closeMatch != null) {
-                AppLogStore.add("已通过右上角关闭按钮确认进入广告界面")
+                AppLogStore.add("已通过 content-desc=“$AD_CLOSE_CONTENT_DESCRIPTION”的组件确认进入广告界面")
                 return closeMatch
             }
 
-            AppLogStore.add("点击“去完成”后未检测到广告关闭按钮，等待后重新确认任务状态")
+            AppLogStore.add("点击“去完成”后未检测到广告关闭组件，等待后重新确认任务状态")
             delay(RETRY_DELAY_MILLIS)
             val refreshedAction = findTaskActionOnCurrentScreen(task, bridge)
-            if (refreshedAction != null && refreshedAction.isGoComplete()) {
+            if (refreshedAction?.actionText == GO_COMPLETE_TEXT) {
                 val elapsedMillis = System.currentTimeMillis() - startedAtMillis
                 if (
                     attempt >= MAX_GO_COMPLETE_STILL_VISIBLE_ATTEMPTS ||
@@ -611,7 +559,6 @@ class QidianPartialCheckInFlow(
                     return null
                 }
                 AppLogStore.add("任务状态仍是“去完成”，继续点击；当前仍在安全重试窗口内")
-                action = refreshedAction
             } else {
                 AppLogStore.add("未重新定位到“去完成”，停止使用旧坐标重试")
                 return null
@@ -623,22 +570,25 @@ class QidianPartialCheckInFlow(
         bridge: AccessibilityBridge,
         executor: ActionExecutor,
         phase: String
-    ): CloseButtonMatch? {
-        val closeMatch = waitForCloseButton(bridge, timeoutMillis = 8_000) ?: return null
-        tapDetectedCloseButton(closeMatch, executor, phase)
+    ): AdCloseComponent? {
+        val closeMatch = waitForAdCloseButton(bridge, timeoutMillis = 8_000) ?: return null
+        if (!tapAdCloseComponent(bridge, executor, phase)) return null
         return closeMatch
     }
 
-    private suspend fun tapDetectedCloseButton(
-        closeMatch: CloseButtonMatch,
+    private suspend fun tapAdCloseComponent(
+        bridge: AccessibilityBridge,
         executor: ActionExecutor,
         phase: String
-    ) {
-        executor.execute(AutomationAction.TapPoint(closeMatch.point)).getOrThrow()
-        AppLogStore.add(
-            "已点击右上角关闭按钮（$phase）：${closeMatch.templateName}，分数 ${"%.3f".format(closeMatch.score)}"
-        )
+    ): Boolean {
+        delay(COMPONENT_CLICK_DEBOUNCE_MILLIS)
+        val refreshed = bridge.readActiveWindow()?.findAdCloseComponent() ?: return false
+        executor.execute(
+            AutomationAction.TapPoint(refreshed.tree.clickPointFor(refreshed.closeNode))
+        ).getOrThrow()
+        AppLogStore.add("已点击广告关闭组件（$phase）：content-desc=“$AD_CLOSE_CONTENT_DESCRIPTION”")
         delay(700)
+        return true
     }
 
     private suspend fun logCurrentOcrPreview(
@@ -689,24 +639,15 @@ class QidianPartialCheckInFlow(
     private suspend fun waitForWelfareCenter(
         bridge: AccessibilityBridge,
         timeoutMillis: Long
-    ): OcrScreen? {
+    ): UiTreeSnapshot? {
         val deadline = System.currentTimeMillis() + timeoutMillis
-        var lastPreview = ""
         while (System.currentTimeMillis() < deadline) {
-            val screen = captureOcrScreen(bridge).getOrNull()
-            if (screen != null) {
-                if (screen.ocr.hasWelfareCenterMarkers()) {
-                    AppLogStore.add(
-                        "OCR 已识别：福利中心，命中：${screen.ocr.welfareCenterMarkerSummary()}，耗时 ${screen.ocr.elapsedMillis} ms"
-                    )
-                    return screen
-                }
-                lastPreview = screen.ocr.logPreview()
+            val tree = bridge.readActiveWindow()
+            if (tree?.hasWelfareCenterMarkers() == true) {
+                AppLogStore.add("组件已识别：福利中心，同时找到“本周收益”和“积分商城”")
+                return tree
             }
-            delay(700)
-        }
-        if (lastPreview.isNotBlank()) {
-            AppLogStore.add("福利中心 OCR 未满足验证条件，最近预览：$lastPreview")
+            delay(COMPONENT_POLL_INTERVAL_MILLIS)
         }
         return null
     }
@@ -727,54 +668,19 @@ class QidianPartialCheckInFlow(
         }
     }
 
-    private suspend fun detectCloseButton(bridge: AccessibilityBridge): today.qdreader.auto.vision.CloseButtonMatch? {
-        var bitmap: Bitmap? = null
-        return try {
-            bitmap = bridge.captureScreenshot().getOrThrow()
-            closeButtonDetector.detectCloseButton(bitmap).getOrThrow()
-        } finally {
-            bitmap?.recycle()
-        }
-    }
-
-    private suspend fun waitForCloseButton(
+    private suspend fun waitForAdCloseButton(
         bridge: AccessibilityBridge,
         timeoutMillis: Long
-    ): CloseButtonMatch? {
+    ): AdCloseComponent? {
         val deadline = System.currentTimeMillis() + timeoutMillis
         while (System.currentTimeMillis() < deadline) {
-            val match = runCatching { detectCloseButton(bridge) }.getOrNull()
+            val match = bridge.readActiveWindow()?.findAdCloseComponent()
             if (match != null) {
                 return match
             }
-            delay(600)
+            delay(COMPONENT_POLL_INTERVAL_MILLIS)
         }
-        return inferCloseButtonFromAdOcrFallback(bridge)
-    }
-
-    private suspend fun inferCloseButtonFromAdOcrFallback(
-        bridge: AccessibilityBridge
-    ): CloseButtonMatch? {
-        val screen = captureOcrScreen(bridge).getOrNull() ?: return null
-        if (!screen.ocr.hasAdCloseFallbackHints()) {
-            AppLogStore.add("关闭按钮 OpenCV 未命中，广告页 OCR 兜底也未满足；OCR 预览：${screen.ocr.logPreview()}")
-            return null
-        }
-
-        val point = ScreenPoint(screen.width * 0.94f, screen.height * 0.10f)
-        val radius = (screen.width * 0.045f).coerceIn(20f, 42f).toInt()
-        AppLogStore.add("关闭按钮 OpenCV 未命中，但 OCR 命中广告页提示，使用右上角兜底坐标")
-        return CloseButtonMatch(
-            point = point,
-            bounds = android.graphics.Rect(
-                (point.x - radius).toInt(),
-                (point.y - radius).toInt(),
-                (point.x + radius).toInt(),
-                (point.y + radius).toInt()
-            ),
-            score = AD_OCR_CLOSE_FALLBACK_SCORE,
-            templateName = "ocr_ad_hint_top_right_fallback"
-        )
+        return null
     }
 
     private fun UiTreeSnapshot.hasBottomTabs(): Boolean {
@@ -792,51 +698,9 @@ class QidianPartialCheckInFlow(
     }
 
     private fun UiTreeSnapshot.hasWelfareCenterMarkers(): Boolean {
-        val matchedGroups = WELFARE_CENTER_MARKER_GROUPS.mapNotNull { (groupName, aliases) ->
-            if (aliases.any { alias -> hasNode(alias) }) groupName else null
-        }
-        val strongGroupCount = matchedGroups.count { group -> group != WELFARE_CENTER_TITLE_MARKER }
-        val hasTitle = matchedGroups.contains(WELFARE_CENTER_TITLE_MARKER)
-        return strongGroupCount >= 2 || (hasTitle && strongGroupCount >= 1)
-    }
-
-    private fun OcrResult.hasWelfareCenterMarkers(): Boolean {
-        val matchedGroups = matchedWelfareCenterMarkerGroups()
-        val strongGroupCount = matchedGroups.count { group -> group != WELFARE_CENTER_TITLE_MARKER }
-        val hasTitle = matchedGroups.contains(WELFARE_CENTER_TITLE_MARKER)
-        return strongGroupCount >= 2 ||
-            (hasTitle && strongGroupCount >= 1) ||
-            hasWelfareTaskAreaMarkers()
-    }
-
-    private fun OcrResult.welfareCenterMarkerSummary(): String {
-        val matchedGroups = matchedWelfareCenterMarkerGroups().toMutableList()
-        if (hasWelfareTaskAreaMarkers()) {
-            matchedGroups += "任务区域"
-        }
-        return if (matchedGroups.isEmpty()) "无" else matchedGroups.joinToString("、")
-    }
-
-    private fun OcrResult.matchedWelfareCenterMarkerGroups(): List<String> {
-        return WELFARE_CENTER_MARKER_GROUPS.mapNotNull { (groupName, aliases) ->
-            if (aliases.any { alias -> hasText(alias) }) groupName else null
-        }
-    }
-
-    private fun OcrResult.hasWelfareTaskAreaMarkers(): Boolean {
-        val hasTaskAnchor = WELFARE_AD_TASKS.any { task -> hasAnyText(task.matchTexts) }
-        val hasTaskState = hasAnyText(TASK_ACTION_TEXTS)
-        val hasRewardHint = hasAnyText(WELFARE_TASK_REWARD_HINT_TEXTS)
-        return hasTaskAnchor && (hasTaskState || hasRewardHint)
-    }
-
-    private fun OcrResult.hasAdCloseFallbackHints(): Boolean {
-        return hasAnyText(AD_CLOSE_FALLBACK_REWARD_HINT_TEXTS) &&
-            hasAnyText(AD_CLOSE_FALLBACK_CONTEXT_TEXTS)
-    }
-
-    private fun OcrActionTextMatch.isGoComplete(): Boolean {
-        return actionText in GO_COMPLETE_TEXTS || actionText == INFERRED_GO_COMPLETE_TEXT
+        return packageName == AppConstants.QIDIAN_PACKAGE &&
+            root.flatten().any { node -> node.isTextViewWithText(WELFARE_WEEKLY_EARNINGS_TEXT) } &&
+            root.flatten().any { node -> node.isTextViewWithText(WELFARE_POINTS_MALL_TEXT) }
     }
 
     private fun restartableFailure(message: String): FlowExecutionResult {
@@ -847,11 +711,13 @@ class QidianPartialCheckInFlow(
         )
     }
 
-    private fun OcrScreen.upSwipeAction(): AutomationAction.SwipePoints {
-        val centerX = width * 0.5f
+    private fun UiTreeSnapshot.upSwipeAction(): AutomationAction.SwipePoints {
+        val width = root.bounds.width()
+        val height = root.bounds.height()
+        val centerX = root.bounds.left + width * 0.5f
         return AutomationAction.SwipePoints(
-            start = ScreenPoint(centerX, height * 0.78f),
-            end = ScreenPoint(centerX, height * 0.36f),
+            start = ScreenPoint(centerX, root.bounds.top + height * 0.78f),
+            end = ScreenPoint(centerX, root.bounds.top + height * 0.36f),
             durationMillis = 520
         )
     }
@@ -868,133 +734,85 @@ class QidianPartialCheckInFlow(
         return ScreenPoint(inferredActionX, giveUpPoint.y)
     }
 
-    private fun OcrScreen.findTaskActionByRowFallback(task: WelfareAdTask): OcrActionTextMatch? {
-        val anchor = findTaskAnchorBounds(task) ?: return null
-        val doneAction = findNearestTaskAction(anchor, TASK_DONE_TEXTS)
-        if (doneAction != null) {
-            AppLogStore.add("OCR 行兜底匹配到“${task.title}”已领取状态")
-            return doneAction
-        }
-
-        val goAction = findNearestTaskAction(anchor, GO_COMPLETE_TEXTS)
-        if (goAction != null) {
-            AppLogStore.add("OCR 行兜底匹配到“${task.title}”去完成按钮")
-            return goAction
-        }
-
-        val inferredBounds = inferredTaskButtonBounds(anchor)
-        AppLogStore.add("OCR 找到“${task.title}”标题但未读到右侧按钮，按同一行右侧推断“去完成”坐标")
-        return OcrActionTextMatch(
-            actionText = INFERRED_GO_COMPLETE_TEXT,
-            point = ScreenPoint(inferredBounds.exactCenterX(), inferredBounds.exactCenterY()),
-            bounds = inferredBounds
+    private fun UiTreeSnapshot.findTaskAction(task: WelfareAdTask): TaskComponentMatch? {
+        if (packageName != AppConstants.QIDIAN_PACKAGE) return null
+        val row = findTaskRow(task) ?: return null
+        val actionNode = TASK_STATUS_TEXTS.firstNotNullOfOrNull { statusText ->
+            row.flatten().firstOrNull { node -> node.isTextViewWithText(statusText) }
+        } ?: return null
+        return TaskComponentMatch(
+            tree = this,
+            actionNode = actionNode,
+            actionText = actionNode.text.orEmpty()
         )
     }
 
-    private fun OcrScreen.findTaskAnchorBounds(task: WelfareAdTask): Rect? {
-        val minY = height * TASK_ROW_MIN_Y_FRACTION
-        val maxY = height * TASK_ROW_MAX_Y_FRACTION
-        task.rowAnchorTexts.forEach { anchorText ->
-            val match = ocr.findBlocksContaining(anchorText)
-                .mapNotNull { block -> block.bounds }
-                .filter { bounds ->
-                    bounds.exactCenterY() in minY..maxY
+    private fun UiTreeSnapshot.findTaskRow(task: WelfareAdTask): UiNodeSnapshot? {
+        val explicitRow = task.rowViewId?.let { rowViewId ->
+            root.flatten().firstOrNull { node ->
+                node.viewId.matchesWebViewId(rowViewId) &&
+                    node.className == WEB_VIEW_ROW_CLASS_NAME &&
+                    node.flatten().any { child -> child.isTextViewWithText(task.title) }
+            }
+        }
+        if (explicitRow != null) return explicitRow
+
+        return root.flatten()
+            .filter { container ->
+                val descendants = container.flatten().toList()
+                descendants.any { node -> node.isTextViewWithText(task.title) } &&
+                    descendants.any { node ->
+                        TASK_STATUS_TEXTS.any { statusText -> node.isTextViewWithText(statusText) }
+                    }
+            }
+            .minByOrNull { container -> container.bounds.safeArea() }
+    }
+
+    private fun UiTreeSnapshot.findAdCloseComponent(): AdCloseComponent? {
+        if (packageName != AppConstants.QIDIAN_PACKAGE) return null
+        val closeNode = root.flatten().firstOrNull { node ->
+            node.contentDescription == AD_CLOSE_CONTENT_DESCRIPTION &&
+                node.className == AD_CLOSE_CLASS_NAME &&
+                node.enabled
+        } ?: return null
+        return AdCloseComponent(this, closeNode)
+    }
+
+    private fun UiTreeSnapshot.findRewardConfirmDialog(): RewardConfirmComponent? {
+        if (packageName != AppConstants.QIDIAN_PACKAGE) return null
+        val dialogGroup = root.flatten()
+            .mapNotNull { container ->
+                val descendants = container.flatten().toList()
+                val rewardNode = descendants.firstOrNull { node ->
+                    node.className == TEXT_VIEW_CLASS_NAME &&
+                        node.text?.startsWith(REWARD_TITLE_PREFIX) == true
                 }
-                .minByOrNull { bounds -> bounds.top * width + bounds.left }
-            if (match != null) return match
-        }
-        return null
-    }
-
-    private fun OcrScreen.findNearestTaskAction(
-        anchor: Rect,
-        actionTexts: List<String>
-    ): OcrActionTextMatch? {
-        return actionTexts
-            .flatMap { actionText ->
-                ocr.findBlocksContaining(actionText).mapNotNull { block ->
-                    block.bounds?.let { bounds -> actionText to bounds }
+                val confirmNode = descendants.firstOrNull { node -> node.isTextViewWithText(KNOW_TEXT) }
+                if (rewardNode != null && confirmNode != null) {
+                    Triple(container, rewardNode, confirmNode)
+                } else {
+                    null
                 }
             }
-            .filter { (_, bounds) -> bounds.isLikelySameVisibleTaskRow(anchor, width) }
-            .minByOrNull { (_, bounds) ->
-                abs(bounds.exactCenterY() - anchor.exactCenterY()) * 4 +
-                    abs(bounds.exactCenterX() - expectedTaskButtonCenterX())
-            }
-            ?.let { (actionText, bounds) ->
-                OcrActionTextMatch(
-                    actionText = actionText,
-                    point = ScreenPoint(bounds.exactCenterX(), bounds.exactCenterY()),
-                    bounds = bounds
-                )
-            }
-    }
-
-    private fun Rect.isLikelySameVisibleTaskRow(anchor: Rect, screenWidth: Int): Boolean {
-        val verticalTolerance = minOf(72f, maxOf(48f, anchor.height() * 1.2f))
-        val isRightButtonArea = exactCenterX() >= screenWidth * TASK_BUTTON_MIN_X_FRACTION
-        return isRightButtonArea && abs(exactCenterY() - anchor.exactCenterY()) <= verticalTolerance
-    }
-
-    private fun OcrScreen.inferredTaskButtonBounds(anchor: Rect): Rect {
-        val centerX = expectedTaskButtonCenterX()
-        val centerY = anchor.exactCenterY()
-        val halfWidth = width * 0.095f
-        val halfHeight = maxOf(26f, anchor.height() * 0.9f)
-        return Rect(
-            (centerX - halfWidth).toInt(),
-            (centerY - halfHeight).toInt(),
-            (centerX + halfWidth).toInt(),
-            (centerY + halfHeight).toInt()
+            .minByOrNull { (container, _, _) -> container.bounds.safeArea() }
+            ?: return null
+        return RewardConfirmComponent(
+            tree = this,
+            rewardNode = dialogGroup.second,
+            confirmNode = dialogGroup.third
         )
     }
 
-    private fun OcrScreen.expectedTaskButtonCenterX(): Float {
-        return width * 0.87f
+    private fun Rect.safeArea(): Long {
+        return width().coerceAtLeast(0).toLong() * height().coerceAtLeast(0).toLong()
     }
 
-    private fun OcrScreen.inferRewardConfirmButtonPoint(): ScreenPoint {
-        val rewardTextPoint = findCenteredRewardStrongTextPoint()
-            ?: findCenteredRewardConfirmTextPoint()
-        if (rewardTextPoint != null) {
-            return ScreenPoint(rewardTextPoint.x, rewardTextPoint.y + height * 0.11f)
-        }
-        return ScreenPoint(
-            width * DEFAULT_REWARD_CONFIRM_X_FRACTION,
-            height * DEFAULT_REWARD_CONFIRM_Y_FRACTION
-        )
+    private fun UiNodeSnapshot.isTextViewWithText(expectedText: String): Boolean {
+        return className == TEXT_VIEW_CLASS_NAME && text == expectedText
     }
 
-    private fun OcrScreen.findCenteredRewardStrongTextPoint(): ScreenPoint? {
-        val minX = width * 0.15f
-        val maxX = width * 0.85f
-        val minY = height * 0.28f
-        val maxY = height * 0.68f
-        return REWARD_DIALOG_STRONG_TEXTS
-            .flatMap { text -> ocr.findBlocksContaining(text) }
-            .mapNotNull { block -> block.bounds }
-            .filter { bounds ->
-                bounds.exactCenterX() in minX..maxX &&
-                    bounds.exactCenterY() in minY..maxY
-            }
-            .minByOrNull { bounds -> bounds.top * width + bounds.left }
-            ?.let { bounds -> ScreenPoint(bounds.exactCenterX(), bounds.exactCenterY()) }
-    }
-
-    private fun OcrScreen.findCenteredRewardConfirmTextPoint(): ScreenPoint? {
-        val minX = width * 0.28f
-        val maxX = width * 0.72f
-        val minY = height * 0.38f
-        val maxY = height * 0.60f
-        return REWARD_DIALOG_FALLBACK_TEXTS
-            .flatMap { text -> ocr.findBlocksContaining(text) }
-            .mapNotNull { block -> block.bounds }
-            .filter { bounds ->
-                bounds.exactCenterX() in minX..maxX &&
-                    bounds.exactCenterY() in minY..maxY
-            }
-            .minByOrNull { bounds -> bounds.top * width + bounds.left }
-            ?.let { bounds -> ScreenPoint(bounds.exactCenterX(), bounds.exactCenterY()) }
+    private fun String?.matchesWebViewId(expectedId: String): Boolean {
+        return this == expectedId || this?.endsWith(":id/$expectedId") == true
     }
 
     companion object {
@@ -1005,11 +823,18 @@ class QidianPartialCheckInFlow(
         private const val INCENTIVE_TASK_TEXT = "激励任务"
         private const val THREE_AD_TASK_TEXT = "完成3个广告任务得奖励"
         private const val ONE_AD_TASK_TEXT = "完成1个广告任务得奖励"
+        private const val THREE_AD_TASK_ROW_ID = "task_row_T2024010101"
+        private const val ONE_AD_TASK_ROW_ID = "task_row_T2024010102"
         private const val GO_COMPLETE_TEXT = "去完成"
-        private const val INFERRED_GO_COMPLETE_TEXT = "去完成(行兜底)"
         private const val CLAIMED_TEXT = "已领取"
-        private const val COMPLETED_TEXT = "已完成"
         private const val KNOW_TEXT = "知道了"
+        private const val REWARD_TITLE_PREFIX = "恭喜获得"
+        private const val WELFARE_WEEKLY_EARNINGS_TEXT = "本周收益"
+        private const val WELFARE_POINTS_MALL_TEXT = "积分商城"
+        private const val AD_CLOSE_CONTENT_DESCRIPTION = "点击退出关闭视频"
+        private const val AD_CLOSE_CLASS_NAME = "android.view.ViewGroup"
+        private const val TEXT_VIEW_CLASS_NAME = "android.widget.TextView"
+        private const val WEB_VIEW_ROW_CLASS_NAME = "android.view.View"
         private const val MAX_CLICK_ATTEMPTS = 3
         private const val SHORT_VERIFY_TIMEOUT_MILLIS = 2_000L
         private const val NAVIGATION_VERIFY_TIMEOUT_MILLIS = 4_000L
@@ -1019,8 +844,6 @@ class QidianPartialCheckInFlow(
         private const val REWARD_CONFIRM_TIMEOUT_MILLIS = 6_000L
         private const val REWARD_CONFIRM_MAX_TAP_ATTEMPTS = 3
         private const val REWARD_CONFIRM_DISMISS_VERIFY_DELAY_MILLIS = 900L
-        private const val DEFAULT_REWARD_CONFIRM_X_FRACTION = 0.50f
-        private const val DEFAULT_REWARD_CONFIRM_Y_FRACTION = 0.66f
         private const val GO_COMPLETE_TO_REWARD_CONFIRM_TIMEOUT_MILLIS = 60_000L
         private const val GO_COMPLETE_STILL_VISIBLE_WINDOW_MILLIS = 60_000L
         private const val MAX_GO_COMPLETE_STILL_VISIBLE_ATTEMPTS = 6
@@ -1031,25 +854,12 @@ class QidianPartialCheckInFlow(
         private const val WELFARE_ENTRY_REQUIRED_STABLE_SAMPLES = 3
         private const val WELFARE_ENTRY_MAX_POSITION_DRIFT_PX = 6
         private const val RETRY_DELAY_MILLIS = 1_000L
-        private const val AD_OCR_CLOSE_FALLBACK_SCORE = 0.52
-        private const val TASK_ROW_MIN_Y_FRACTION = 0.12f
-        private const val TASK_ROW_MAX_Y_FRACTION = 0.96f
-        private const val TASK_BUTTON_MIN_X_FRACTION = 0.64f
+        private const val COMPONENT_CLICK_DEBOUNCE_MILLIS = 500L
+        private const val COMPONENT_POLL_INTERVAL_MILLIS = 500L
 
         private val BOTTOM_TABS = listOf("书架", "精选", "发现", "我")
-        private const val WELFARE_CENTER_TITLE_MARKER = "福利中心"
-        private val WELFARE_CENTER_MARKER_GROUPS = listOf(
-            WELFARE_CENTER_TITLE_MARKER to listOf("福利中心"),
-            "本周收益" to listOf("本周收益", "周收益", "本周收"),
-            "积分商城" to listOf("积分商城", "积分商场", "积分商"),
-            "完成任务得奖励" to listOf("完成任务得奖励", "任务得奖励", "完成任务", "得奖励")
-        )
-        private val GO_COMPLETE_TEXTS = listOf(GO_COMPLETE_TEXT, "去完", "去宪成", "去完咸")
-        private val CLAIMED_TEXTS = listOf(CLAIMED_TEXT, "已领", "己领取", "己领")
-        private val COMPLETED_TEXTS = listOf(COMPLETED_TEXT, "已完", "己完成", "己完")
-        private val TASK_DONE_TEXTS = CLAIMED_TEXTS + COMPLETED_TEXTS
-        private val TASK_ACTION_TEXTS = TASK_DONE_TEXTS + GO_COMPLETE_TEXTS
-        private val WELFARE_TASK_REWARD_HINT_TEXTS = listOf("广告任务", "章节卡", "订阅券", "多重好礼")
+        private val TASK_DONE_TEXTS = listOf(CLAIMED_TEXT)
+        private val TASK_STATUS_TEXTS = TASK_DONE_TEXTS + GO_COMPLETE_TEXT
         private val BROWSE_ACTION_TEXTS = listOf(
             "点击去浏览",
             "去浏览",
@@ -1068,49 +878,19 @@ class QidianPartialCheckInFlow(
             "获得奖励",
             "领取奖励"
         )
-        private val AD_CLOSE_FALLBACK_REWARD_HINT_TEXTS = listOf(
-            "点击后",
-            "看15秒",
-            "15秒",
-            "可获得奖励",
-            "获得奖励"
-        )
-        private val AD_CLOSE_FALLBACK_CONTEXT_TEXTS = listOf(
-            "查看详情",
-            "进入详情页",
-            "第三方应用",
-            "广告"
-        )
         private val REWARD_GRANTED_TEXTS = listOf("恭喜已获得奖励", "恭喜获得奖励", "恭喜获得", "已获得奖励", "奖励已到账")
-        private val KNOW_BUTTON_TEXTS = listOf("我知道了", "我知道啦", KNOW_TEXT, "知道啦", "知道")
-        private val REWARD_DIALOG_STRONG_TEXTS = listOf(
-            "恭喜获得",
-            "恭喜已获得奖励",
-            "恭喜获得奖励",
-            "已获得奖励",
-            "获得奖励",
-            "恭喜"
-        )
-        private val REWARD_DIALOG_FALLBACK_TEXTS = listOf(
-            "订阅券",
-            "章节卡",
-            "点币"
-        )
         private val WELFARE_AD_TASKS = listOf(
             WelfareAdTask(
                 title = INCENTIVE_TASK_TEXT,
-                matchTexts = listOf(INCENTIVE_TASK_TEXT, "激励", "完成广告任务", "多重好礼"),
-                rowAnchorTexts = listOf(INCENTIVE_TASK_TEXT, "激励任务", "激励")
+                rowViewId = null
             ),
             WelfareAdTask(
                 title = THREE_AD_TASK_TEXT,
-                matchTexts = listOf(THREE_AD_TASK_TEXT, "完成3个广告", "再完成3次", "10点章节卡"),
-                rowAnchorTexts = listOf(THREE_AD_TASK_TEXT, "完成3个广告")
+                rowViewId = THREE_AD_TASK_ROW_ID
             ),
             WelfareAdTask(
                 title = ONE_AD_TASK_TEXT,
-                matchTexts = listOf(ONE_AD_TASK_TEXT, "完成1个广告", "满10点", "3点订阅券"),
-                rowAnchorTexts = listOf(ONE_AD_TASK_TEXT, "完成1个广告")
+                rowViewId = ONE_AD_TASK_ROW_ID
             )
         )
         private const val TASK_STATUS_POLL_ATTEMPTS = 4
@@ -1125,8 +905,24 @@ private data class OcrScreen(
 
 private data class WelfareAdTask(
     val title: String,
-    val matchTexts: List<String>,
-    val rowAnchorTexts: List<String>
+    val rowViewId: String?
+)
+
+private data class TaskComponentMatch(
+    val tree: UiTreeSnapshot,
+    val actionNode: UiNodeSnapshot,
+    val actionText: String
+)
+
+private data class AdCloseComponent(
+    val tree: UiTreeSnapshot,
+    val closeNode: UiNodeSnapshot
+)
+
+private data class RewardConfirmComponent(
+    val tree: UiTreeSnapshot,
+    val rewardNode: UiNodeSnapshot,
+    val confirmNode: UiNodeSnapshot
 )
 
 private fun OcrResult.logPreview(): String {
