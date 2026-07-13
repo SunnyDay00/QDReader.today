@@ -56,16 +56,12 @@ class AccessibilityBridgeImpl(
 
     override suspend fun restartTargetApp(): Boolean {
         val activeService = service ?: return false
-        if (!activeService.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)) {
-            AppLogStore.add("重启阶段失败：无法返回桌面")
+
+        if (!bringAutomationAppToForeground(activeService)) {
+            AppLogStore.add("重启阶段失败：自动化 App 未进入前台，停止从后台启动起点")
             return false
         }
-        AppLogStore.add("重启阶段：已返回桌面，等待起点进入后台")
-        if (!waitForPackageToLeaveTarget(activeService)) {
-            AppLogStore.add("重启阶段失败：返回桌面后前台仍是起点读书")
-            return false
-        }
-        AppLogStore.add("重启阶段：已确认起点读书离开前台")
+        AppLogStore.add("重启阶段：准备关闭起点读书")
 
         if (!DeviceStatus.closeTargetApp(context)) {
             AppLogStore.add("重启阶段失败：无法请求关闭起点后台进程")
@@ -73,6 +69,14 @@ class AccessibilityBridgeImpl(
         }
         AppLogStore.add("重启阶段：已请求关闭起点后台进程")
         delay(RESTART_PROCESS_SETTLE_DELAY_MILLIS)
+
+        if (activeService.currentPackage() != context.packageName &&
+            !bringAutomationAppToForeground(activeService)
+        ) {
+            AppLogStore.add("重启阶段失败：关闭起点后自动化 App 不在前台，停止后台重开")
+            return false
+        }
+        AppLogStore.add("重启阶段：已确认关闭后自动化 App 仍在前台，准备重新打开起点")
 
         return launchTargetWithRetry(activeService)
     }
@@ -93,12 +97,40 @@ class AccessibilityBridgeImpl(
 
     companion object {
         private const val HOME_SETTLE_DELAY_MILLIS = 600L
-        private const val RESTART_BACKGROUND_WAIT_TIMEOUT_MILLIS = 3_000L
+        private const val AUTOMATION_FOREGROUND_WAIT_TIMEOUT_MILLIS = 4_000L
         private const val RESTART_PROCESS_SETTLE_DELAY_MILLIS = 900L
         private const val RESTART_LAUNCH_MAX_ATTEMPTS = 4
         private const val RESTART_LAUNCH_RETRY_DELAY_MILLIS = 1_500L
         private const val RESTART_LAUNCH_VERIFY_TIMEOUT_MILLIS = 4_000L
         private const val RESTART_PACKAGE_POLL_INTERVAL_MILLIS = 250L
+    }
+
+    private suspend fun bringAutomationAppToForeground(
+        service: QidianAccessibilityService
+    ): Boolean {
+        if (service.currentPackage() == context.packageName) {
+            AppLogStore.add("重启阶段：自动化 App 已在前台")
+            return true
+        }
+
+        if (!DeviceStatus.openAutomationApp(service)) {
+            AppLogStore.add("重启阶段：自动化 App 前台启动请求发送失败")
+            return false
+        }
+        AppLogStore.add("重启阶段：已请求打开自动化 App，等待前台确认")
+
+        if (!waitForPackageForeground(
+                service = service,
+                packageName = context.packageName,
+                timeoutMillis = AUTOMATION_FOREGROUND_WAIT_TIMEOUT_MILLIS
+            )
+        ) {
+            AppLogStore.add("重启阶段：自动化 App 前台启动请求未生效")
+            return false
+        }
+
+        AppLogStore.add("重启阶段：已确认自动化 App 在前台")
+        return true
     }
 
     private suspend fun launchTargetWithRetry(service: QidianAccessibilityService): Boolean {
@@ -129,22 +161,23 @@ class AccessibilityBridgeImpl(
         return false
     }
 
-    private suspend fun waitForPackageToLeaveTarget(service: QidianAccessibilityService): Boolean {
-        val deadline = System.currentTimeMillis() + RESTART_BACKGROUND_WAIT_TIMEOUT_MILLIS
-        while (System.currentTimeMillis() < deadline) {
-            if (service.currentPackage() != AppConstants.QIDIAN_PACKAGE) return true
-            delay(RESTART_PACKAGE_POLL_INTERVAL_MILLIS)
-        }
-        return false
-    }
-
     private suspend fun waitForTargetForeground(
         service: QidianAccessibilityService,
+        timeoutMillis: Long
+    ): Boolean = waitForPackageForeground(
+        service = service,
+        packageName = AppConstants.QIDIAN_PACKAGE,
+        timeoutMillis = timeoutMillis
+    )
+
+    private suspend fun waitForPackageForeground(
+        service: QidianAccessibilityService,
+        packageName: String,
         timeoutMillis: Long
     ): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMillis
         while (System.currentTimeMillis() < deadline) {
-            if (service.currentPackage() == AppConstants.QIDIAN_PACKAGE) return true
+            if (service.currentPackage() == packageName) return true
             delay(RESTART_PACKAGE_POLL_INTERVAL_MILLIS)
         }
         return false
