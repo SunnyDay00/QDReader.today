@@ -108,7 +108,7 @@ class AccessibilityBridgeImpl(
             if (launchRequested) {
                 val mode = if (clearTask) "清任务启动" else "普通启动"
                 AppLogStore.add(
-                    "重启阶段：已发送起点$mode请求（$attempt/$RESTART_LAUNCH_MAX_ATTEMPTS），等待前台确认"
+                    "重启阶段：已发送起点${mode}请求（$attempt/$RESTART_LAUNCH_MAX_ATTEMPTS），等待前台确认"
                 )
                 if (waitForTargetForeground(service, RESTART_LAUNCH_VERIFY_TIMEOUT_MILLIS)) {
                     AppLogStore.add("重启阶段：第 $attempt 次请求后已确认起点读书进入前台")
