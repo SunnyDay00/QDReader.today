@@ -105,9 +105,9 @@ class QidianPartialCheckInFlow(
 
         AppLogStore.add("步骤 5：组件已确认福利中心，命中“本周收益”和“积分商城”")
 
-        AppLogStore.add("步骤 6：上滑福利中心页面并验证任务区域确实上移")
-        if (!swipeWelfareCenterToTaskArea(welfareCenter, bridge, executor)) {
-            return restartableFailure("福利中心连续上滑后，未确认“激励任务”区域发生上移")
+        AppLogStore.add("步骤 6：确认三个福利任务是否都已显示，缺少任务时才上滑")
+        if (!ensureWelfareTasksVisible(welfareCenter, bridge, executor)) {
+            return restartableFailure("福利中心连续查找后，三个广告奖励任务仍未全部显示")
         }
 
         AppLogStore.add("步骤 7-13：开始按组件处理广告奖励任务")
@@ -294,72 +294,71 @@ class QidianPartialCheckInFlow(
             abs(bottom - other.bottom) <= maxDriftPx
     }
 
-    private suspend fun swipeWelfareCenterToTaskArea(
+    private suspend fun ensureWelfareTasksVisible(
         initialTree: UiTreeSnapshot,
         bridge: AccessibilityBridge,
         executor: ActionExecutor
     ): Boolean {
         var tree = initialTree
-        for (attempt in 1..WELFARE_SWIPE_MAX_ATTEMPTS) {
-            val beforeNode = tree.root.flatten()
-                .firstOrNull { node -> node.isTextViewWithText(INCENTIVE_TASK_TEXT) }
-            val beforeCenterY = beforeNode?.bounds?.exactCenterY()
-            AppLogStore.add(
-                "福利中心上滑 $attempt/$WELFARE_SWIPE_MAX_ATTEMPTS" +
-                    if (beforeCenterY != null) "，上滑前“激励任务”y=${beforeCenterY.toInt()}" else ""
-            )
-            executor.execute(tree.upSwipeAction()).getOrThrow()
-
-            val movedTree = waitForWelfareTaskAreaMove(bridge, beforeCenterY, tree)
-            if (movedTree != null) {
-                val afterCenterY = movedTree.root.flatten()
-                    .firstOrNull { node -> node.isTextViewWithText(INCENTIVE_TASK_TEXT) }
-                    ?.bounds
-                    ?.exactCenterY()
-                AppLogStore.add(
-                    "福利中心上滑已生效" +
-                        if (afterCenterY != null) "，“激励任务”移动到 y=${afterCenterY.toInt()}" else ""
-                )
+        for (swipeCount in 0..WELFARE_TASK_SEARCH_MAX_SWIPES) {
+            val missingTasks = tree.missingVisibleWelfareTasks()
+            if (missingTasks.isEmpty()) {
+                if (swipeCount == 0) {
+                    AppLogStore.add("三个福利任务及状态按钮均已显示，跳过上滑")
+                } else {
+                    AppLogStore.add("上滑 $swipeCount 次后三个福利任务及状态按钮已全部显示")
+                }
                 return true
             }
 
-            AppLogStore.add("福利中心本次上滑后未检测到任务区域上移")
-            tree = bridge.readActiveWindow()
-                ?.takeIf { current -> current.packageName == AppConstants.QIDIAN_PACKAGE }
+            if (swipeCount >= WELFARE_TASK_SEARCH_MAX_SWIPES) break
+
+            AppLogStore.add(
+                "当前未显示：${missingTasks.joinToString("、")}，执行上滑 " +
+                    "${swipeCount + 1}/$WELFARE_TASK_SEARCH_MAX_SWIPES"
+            )
+            executor.execute(tree.upSwipeAction()).getOrThrow()
+            tree = waitForWelfareTaskVisibilityUpdate(bridge, tree.visibleWelfareTaskCount())
+                ?: bridge.readActiveWindow()
+                    ?.takeIf { current -> current.packageName == AppConstants.QIDIAN_PACKAGE }
                 ?: tree
         }
+        AppLogStore.add("福利中心任务仍未全部显示：${tree.missingVisibleWelfareTasks().joinToString("、")}")
         return false
     }
 
-    private suspend fun waitForWelfareTaskAreaMove(
+    private suspend fun waitForWelfareTaskVisibilityUpdate(
         bridge: AccessibilityBridge,
-        beforeCenterY: Float?,
-        referenceTree: UiTreeSnapshot
+        previousVisibleTaskCount: Int
     ): UiTreeSnapshot? {
-        val targetY = referenceTree.root.bounds.top +
-            referenceTree.root.bounds.height() * WELFARE_TASK_AREA_TARGET_Y_FRACTION
-        val deadline = System.currentTimeMillis() + WELFARE_SWIPE_VERIFY_TIMEOUT_MILLIS
+        val deadline = System.currentTimeMillis() + WELFARE_TASK_SEARCH_VERIFY_TIMEOUT_MILLIS
+        var latestTree: UiTreeSnapshot? = null
         while (System.currentTimeMillis() < deadline) {
             val currentTree = bridge.readActiveWindow()
-            val currentNode = currentTree
                 ?.takeIf { tree -> tree.packageName == AppConstants.QIDIAN_PACKAGE }
-                ?.root
-                ?.flatten()
-                ?.firstOrNull { node -> node.isTextViewWithText(INCENTIVE_TASK_TEXT) }
-            val currentCenterY = currentNode?.bounds?.exactCenterY()
-            if (
-                currentTree != null &&
-                currentCenterY != null &&
-                (
-                    currentCenterY <= targetY ||
-                        (beforeCenterY != null && beforeCenterY - currentCenterY >= WELFARE_TASK_AREA_MIN_MOVE_PX)
-                )
-            ) {
-                return currentTree
+            if (currentTree != null) {
+                latestTree = currentTree
+                val visibleTaskCount = currentTree.visibleWelfareTaskCount()
+                if (
+                    visibleTaskCount == WELFARE_AD_TASKS.size ||
+                    visibleTaskCount > previousVisibleTaskCount
+                ) {
+                    return currentTree
+                }
             }
-            delay(WELFARE_SWIPE_VERIFY_POLL_MILLIS)
+            delay(WELFARE_TASK_SEARCH_POLL_MILLIS)
         }
-        return null
+        return latestTree
+    }
+
+    private fun UiTreeSnapshot.missingVisibleWelfareTasks(): List<String> {
+        return WELFARE_AD_TASKS.mapNotNull { task ->
+            if (findTaskAction(task) == null) task.title else null
+        }
+    }
+
+    private fun UiTreeSnapshot.visibleWelfareTaskCount(): Int {
+        return WELFARE_AD_TASKS.count { task -> findTaskAction(task) != null }
     }
 
     private suspend fun completeWelfareAdTask(
@@ -817,7 +816,9 @@ class QidianPartialCheckInFlow(
         val actionNode = if (task.rowViewId != null) {
             val row = findTaskRow(task) ?: return null
             TASK_STATUS_TEXTS.firstNotNullOfOrNull { statusText ->
-                row.flatten().firstOrNull { node -> node.isTextViewWithText(statusText) }
+                row.flatten().firstOrNull { node ->
+                    node.visibleToUser && node.isTextViewWithText(statusText)
+                }
             }
         } else {
             findNearestTaskAction(task)
@@ -832,19 +833,25 @@ class QidianPartialCheckInFlow(
     private fun UiTreeSnapshot.findTaskRow(task: WelfareAdTask): UiNodeSnapshot? {
         val rowViewId = task.rowViewId ?: return null
         return root.flatten().firstOrNull { node ->
+            node.visibleToUser &&
             node.viewId.matchesWebViewId(rowViewId) &&
                 node.className == WEB_VIEW_ROW_CLASS_NAME &&
-                node.flatten().any { child -> child.isTextViewWithText(task.title) }
+                node.flatten().any { child ->
+                    child.visibleToUser && child.isTextViewWithText(task.title)
+                }
         }
     }
 
     private fun UiTreeSnapshot.findNearestTaskAction(task: WelfareAdTask): UiNodeSnapshot? {
-        val titleNode = root.flatten().firstOrNull { node -> node.isTextViewWithText(task.title) }
+        val titleNode = root.flatten().firstOrNull { node ->
+            node.visibleToUser && node.isTextViewWithText(task.title)
+        }
             ?: return null
         val titleCenterY = titleNode.bounds.exactCenterY()
         return root.flatten()
             .filter { node ->
-                TASK_STATUS_TEXTS.any { statusText -> node.isTextViewWithText(statusText) }
+                node.visibleToUser &&
+                    TASK_STATUS_TEXTS.any { statusText -> node.isTextViewWithText(statusText) }
             }
             .filter { node -> node.bounds.left >= titleNode.bounds.exactCenterX() }
             .filter { node ->
@@ -941,11 +948,9 @@ class QidianPartialCheckInFlow(
         private const val RETRY_DELAY_MILLIS = 1_000L
         private const val COMPONENT_CLICK_DEBOUNCE_MILLIS = 500L
         private const val COMPONENT_POLL_INTERVAL_MILLIS = 500L
-        private const val WELFARE_SWIPE_MAX_ATTEMPTS = 3
-        private const val WELFARE_SWIPE_VERIFY_TIMEOUT_MILLIS = 3_000L
-        private const val WELFARE_SWIPE_VERIFY_POLL_MILLIS = 350L
-        private const val WELFARE_TASK_AREA_TARGET_Y_FRACTION = 0.32f
-        private const val WELFARE_TASK_AREA_MIN_MOVE_PX = 80f
+        private const val WELFARE_TASK_SEARCH_MAX_SWIPES = 3
+        private const val WELFARE_TASK_SEARCH_VERIFY_TIMEOUT_MILLIS = 3_000L
+        private const val WELFARE_TASK_SEARCH_POLL_MILLIS = 350L
         private const val TASK_ACTION_MAX_VERTICAL_DISTANCE_PX = 180f
 
         private val BOTTOM_TABS = listOf("书架", "精选", "发现", "我")

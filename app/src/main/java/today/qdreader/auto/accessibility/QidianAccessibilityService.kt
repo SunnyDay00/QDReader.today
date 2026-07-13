@@ -161,6 +161,7 @@ class QidianAccessibilityService : AccessibilityService() {
             bounds = rect,
             clickable = isClickable,
             enabled = isEnabled,
+            visibleToUser = isVisibleToUser,
             children = childSnapshots
         )
     }

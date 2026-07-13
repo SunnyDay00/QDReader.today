@@ -14,6 +14,7 @@ data class UiNodeSnapshot(
     val bounds: Rect,
     val clickable: Boolean,
     val enabled: Boolean,
+    val visibleToUser: Boolean,
     val children: List<UiNodeSnapshot>
 )
 
