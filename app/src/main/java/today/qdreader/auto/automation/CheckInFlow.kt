@@ -407,9 +407,18 @@ class QidianPartialCheckInFlow(
         if (rewardDialogHandled) {
             AppLogStore.add("奖励确认弹窗已消失，允许重新检查任务状态")
         } else {
-            return restartableFailure(
-                "“${task.title}”第 $round 轮未找到同时包含“恭喜获得”和“知道了”的奖励弹窗组件"
-            )
+            AppLogStore.add("未显示奖励确认弹窗，重新检查“${task.title}”任务状态")
+            val currentAction = findTaskActionOnCurrentScreen(task, bridge)
+            when (currentAction?.actionText) {
+                GO_COMPLETE_TEXT -> AppLogStore.add(
+                    "“${task.title}”仍显示“去完成”，本轮不触发整轮重启，继续执行下一轮广告"
+                )
+
+                CLAIMED_TEXT -> AppLogStore.add("“${task.title}”已显示“已领取”，本轮正常结束")
+                else -> return restartableFailure(
+                    "“${task.title}”第 $round 轮既未显示奖励确认弹窗，也未找到当前任务状态"
+                )
+            }
         }
 
         return FlowExecutionResult(true, "“${task.title}”第 $round 轮广告奖励已处理")
