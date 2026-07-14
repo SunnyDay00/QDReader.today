@@ -45,6 +45,16 @@
                 android:resource="@xml/qidian_accessibility_service" />
         </service>
 
+        <service
+            android:name=".automation.AutomationForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="persistent scheduled accessibility automation" />
+        </service>
+
         <receiver
             android:name=".schedule.ScheduleReceiver"
             android:exported="false">

@@ -3,7 +3,7 @@ package today.qdreader.auto.schedule
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import today.qdreader.auto.automation.AutomationController
+import today.qdreader.auto.automation.AutomationForegroundService
 import today.qdreader.auto.core.AutomationTrigger
 import today.qdreader.auto.notifications.AppNotifier
 import today.qdreader.auto.logs.AppLogStore
@@ -16,16 +16,22 @@ class CheckInWorker(
         val source = inputData.getString(INPUT_SOURCE) ?: "unknown"
         setForeground(AppNotifier.runningForegroundInfo(applicationContext, "触发来源：$source"))
         AppLogStore.add("定时 Worker 已启动，来源：$source")
-        val runResult = AutomationController(applicationContext).run(AutomationTrigger.Scheduled)
-        AppNotifier.showStatus(
+        val dispatched = AutomationForegroundService.requestRun(
             applicationContext,
-            if (runResult.success) "起点自动签到定时任务" else "起点自动签到定时任务未完成",
-            runResult.message
+            AutomationTrigger.Scheduled
         )
+        if (!dispatched) {
+            AppLogStore.add("定时任务提交到前台服务失败")
+            AppNotifier.showStatus(
+                applicationContext,
+                "起点自动签到定时任务未启动",
+                "无法连接自动签到前台服务"
+            )
+        }
         if (!isStopped) {
             SchedulePlanner.scheduleNextAfterRun(applicationContext)
         }
-        return Result.success()
+        return if (dispatched) Result.success() else Result.retry()
     }
 
     companion object {

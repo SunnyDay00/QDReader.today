@@ -48,7 +48,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,10 +62,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.CancellationException
 import today.qdreader.auto.accessibility.AccessibilityBridgeImpl
-import today.qdreader.auto.automation.AutomationController
+import today.qdreader.auto.automation.AutomationForegroundService
 import today.qdreader.auto.automation.AutomationRunState
 import today.qdreader.auto.core.AutomationTrigger
 import today.qdreader.auto.core.DeviceStatus
@@ -95,20 +92,17 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         scheduleRepository = ScheduleRepository(this)
         AppNotifier.ensureChannel(this)
+        AutomationForegroundService.keepAlive(this)
 
         setContent {
             QDReaderTheme {
                 val activity = this@MainActivity
-                val scope = rememberCoroutineScope()
                 val logs by AppLogStore.entries.collectAsStateWithLifecycle()
                 val automationRunning by AutomationRunState.isRunning.collectAsStateWithLifecycle()
+                val runOutput by AutomationRunState.latestMessage.collectAsStateWithLifecycle()
                 var dashboardState by remember {
                     mutableStateOf(loadDashboardState(activity, scheduleRepository))
                 }
-                var runOutput by remember {
-                    mutableStateOf("尚未运行自动任务。")
-                }
-
                 fun refresh() {
                     dashboardState = loadDashboardState(activity, scheduleRepository)
                 }
@@ -131,31 +125,14 @@ class MainActivity : ComponentActivity() {
                     automationRunning = automationRunning,
                     onRefresh = { refresh() },
                     onRunAutomation = {
-                        scope.launch {
-                            runOutput = "自动任务运行中..."
-                            try {
-                                val result = AutomationController(activity).run(
-                                    AutomationTrigger.Manual,
-                                    maxRestartCount = dashboardState.scheduleConfig.maxRestartCount
-                                )
-                                runOutput = result.message
-                                AppNotifier.showStatus(
-                                    activity,
-                                    if (result.success) "起点自动签到已完成" else "起点自动签到未完成",
-                                    result.message
-                                )
-                            } catch (_: CancellationException) {
-                                runOutput = "自动任务已停止。"
-                                AppLogStore.add("自动任务已由用户停止，不再继续重启")
-                            } finally {
-                                refresh()
-                            }
-                        }
+                        AutomationForegroundService.requestRun(
+                            activity,
+                            AutomationTrigger.Manual,
+                            dashboardState.scheduleConfig.maxRestartCount
+                        )
                     },
                     onStopAutomation = {
-                        if (AutomationRunState.stop()) {
-                            runOutput = "自动任务已停止。"
-                        }
+                        AutomationRunState.stop()
                     },
                     onSaveSchedule = { config ->
                         scheduleRepository.save(config)

@@ -5,9 +5,11 @@ import android.content.Context
 import android.content.Intent
 import today.qdreader.auto.core.AppConstants
 import today.qdreader.auto.logs.AppLogStore
+import today.qdreader.auto.automation.AutomationForegroundService
 
 class ScheduleReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
+        AutomationForegroundService.keepAlive(context.applicationContext)
         if (intent?.action == AppConstants.DAILY_ALARM_ACTION) {
             SchedulePlanner.triggerFromAlarm(context.applicationContext)
             return
