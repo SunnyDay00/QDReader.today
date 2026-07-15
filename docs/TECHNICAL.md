@@ -43,10 +43,11 @@
 
 ```mermaid
 flowchart TD
-    UI["MainActivity Compose UI"] --> Foreground["AutomationForegroundService"]
-    Alarm["AlarmManager / ScheduleReceiver"] --> Schedule["CheckInWorker"]
-    Fallback["WorkManager delayed fallback"] --> Schedule
-    Schedule --> Foreground
+    Alarm["AlarmManager activity PendingIntent"] --> UI["MainActivity Compose UI"]
+    Fallback["WorkManager delayed fallback"] --> Schedule["CheckInWorker"]
+    Schedule --> Launcher["ScheduledRunLauncher"]
+    Launcher --> UI
+    UI --> Foreground["AutomationForegroundService"]
     Foreground --> Controller["AutomationController"]
     Controller --> Bridge["AccessibilityBridgeImpl"]
     Controller --> Flow["QidianPartialCheckInFlow"]
@@ -66,7 +67,7 @@ flowchart TD
 
 - 顶部品牌区：显示红色书本标识、应用名、服务就绪状态，以及无障碍/服务/起点三个状态 chip。
 - 自动任务区：手动运行自动签到、每日自动运行开关、执行时间、失败重启次数、保存入口和最近结果。
-- 运行控制：`AutomationForegroundService` 是手动按钮和定时 Worker 共用的唯一执行入口；两者只发送不同来源的运行命令，实际都由该常驻服务创建同一种协程并调用 `AutomationController`。`AutomationRunState` 保存当前自动化 Job、`isRunning` 和最近结果；运行中主按钮切换为“停止运行”，控制器透传 `CancellationException`，不会把用户停止误判为步骤失败或触发重启。
+- 运行控制：`AutomationForegroundService` 是手动和定时任务共用的唯一自动化执行入口。手动按钮直接提交命令；定时任务必须先由 `MainActivity` 获得窗口焦点，等待 750 ms 稳定后再提交同一种命令，避免 MIUI 把后续起点启动判定为后台 Activity 启动。`AutomationRunState` 保存当前自动化 Job、`isRunning` 和最近结果；运行中主按钮切换为“停止运行”，控制器透传 `CancellationException`，不会把用户停止误判为步骤失败或触发重启。
 - 常驻通知：应用首次打开、设备重启、应用升级或定时广播到达时会启动 `specialUse` 类型的 `AutomationForegroundService`。低重要性通知持续显示，服务使用 `START_STICKY`，降低定时到点时应用进程和无障碍服务尚未就绪的概率。
 - 精确定时提示：Android 12 及以上未取得“闹钟和提醒”权限时，在自动任务区显示紧凑警告和授权入口；未授权时仍保留系统定时和 WorkManager 补偿，但执行时间可能延迟。
 - 权限跳转：顶部红色“无障碍/服务”状态块和底部异常状态行可点击。无障碍或服务异常打开无障碍设置，通知异常打开应用设置，精确定时异常打开“闹钟和提醒”授权。
@@ -370,9 +371,10 @@ QidianPartialCheckInFlow(
 
 - `ScheduleConfig`：每日时间和启用状态。
 - `SchedulePlanner`：安排每日任务。
-- `CheckInWorker`：把定时运行命令提交给 `AutomationForegroundService`。
+- `ScheduledRunLauncher`：创建指向 `MainActivity` 的 Activity PendingIntent，并为 Android 14 及以上声明后台 Activity 启动许可；Android 16 使用 `MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS`，避免退化成“仅调用方可见时允许”。
+- `CheckInWorker`：15 分钟补偿通道，只负责通过 `ScheduledRunLauncher` 打开自动签到界面。
 
-手动按钮和定时 Worker 都调用 `AutomationForegroundService.requestRun()`，由前台服务的同一个 `startAutomation()` 执行 `AutomationController`。前台服务会先等待最多 10 秒让无障碍服务完成连接，再开始任务。后续如果要区分手动和定时行为，只在 `AutomationTrigger` 和 `AutomationController` 层扩展，不再增加第二套执行入口。
+手动按钮直接调用 `AutomationForegroundService.requestRun()`。定时任务通过 `MainActivity` 的 scheduled-run Intent 进入前台；Activity 只有在 `onWindowFocusChanged(true)` 且继续保持焦点 750 ms 后才调用同一个 `requestRun()`。前台服务随后等待最多 10 秒让无障碍服务完成连接，并由同一个 `startAutomation()` 执行 `AutomationController`。
 
 ### 定时触发实现
 
@@ -380,14 +382,14 @@ QidianPartialCheckInFlow(
 
 当前改为双通道：
 
-- 主通道：`AlarmManager` 在目标时间发送显式广播给 `ScheduleReceiver`，接收器立即提交 `CheckInWorker`。
+- 主通道：`AlarmManager` 在目标时间直接发送 Activity PendingIntent 打开 `MainActivity`，不是先进入后台广播或 Worker。Activity 会请求亮屏、保持屏幕点亮并尝试解除非安全锁屏，确认窗口可见后才开始自动化。
 - 精确定时：Android 12 及以上在取得 `SCHEDULE_EXACT_ALARM` 特殊权限后使用 `setExactAndAllowWhileIdle`；未授权时使用 `setAndAllowWhileIdle`，可能被系统延迟。
 - 补偿通道：同时安排设定时间后 15 分钟的 OneTime WorkManager。若主闹钟没有正常提交任务，补偿任务仍会尝试运行。
 - 每次闹钟触发或 Worker 正常结束后安排下一天任务。
 - `BOOT_COMPLETED`、`MY_PACKAGE_REPLACED`、`TIME_SET` 和 `TIMEZONE_CHANGED` 会触发重新安排，处理重启、升级和系统时间变化。
 - 保存每日自动任务和 Activity 恢复前台时也会重新核对安排。
 - `CheckInWorker` 会记录触发来源 `alarm` 或 `work_fallback`，方便从日志判断是哪条通道执行。
-- `CheckInWorker` 启动后调用 `setForeground()` 保证定时命令可靠提交，真正的长任务由常驻的 `specialUse` 类型 `AutomationForegroundService` 执行。Worker 和手动按钮因此不会再分别持有不同的自动化协程。
+- `CheckInWorker` 启动后调用 `setForeground()`，再通过带后台 Activity 启动许可的 PendingIntent 打开 `MainActivity`；它不直接启动起点或执行自动化。真正的长任务仍由常驻的 `specialUse` 类型 `AutomationForegroundService` 执行。
 
 注意：精确定时权限只决定到点唤醒精度。无障碍服务仍必须保持启用，系统/厂商的应用自启动和后台运行限制也可能影响 Worker；补偿通道用于降低这种风险，但不能绕过系统明确禁止的后台运行策略。
 

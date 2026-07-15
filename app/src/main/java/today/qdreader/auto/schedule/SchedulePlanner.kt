@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit
 
 object SchedulePlanner {
     fun reschedule(context: Context) {
+        cancelLegacyAlarm(context)
         val repository = ScheduleRepository(context)
         val config = repository.load()
         val workManager = WorkManager.getInstance(context)
@@ -40,7 +41,7 @@ object SchedulePlanner {
         )
     }
 
-    fun triggerFromAlarm(context: Context) {
+    fun triggerFromLegacyAlarm(context: Context) {
         val config = ScheduleRepository(context).load()
         if (!config.enabled) {
             cancelAlarm(context)
@@ -48,18 +49,15 @@ object SchedulePlanner {
             return
         }
 
-        val nextDelayMillis = nextDelayMillis(config.hour, config.minute)
-        scheduleAlarm(context, nextDelayMillis)
-
-        val request = OneTimeWorkRequestBuilder<CheckInWorker>()
-            .setInputData(workerData("alarm"))
-            .build()
-        WorkManager.getInstance(context).enqueueUniqueWork(
-            AppConstants.UNIQUE_DAILY_WORK,
-            ExistingWorkPolicy.REPLACE,
-            request
+        reschedule(context)
+        val activityOpened = ScheduledRunLauncher.openActivity(
+            context,
+            ScheduledRunLauncher.SOURCE_LEGACY_ALARM
         )
-        AppLogStore.add("每日定时闹钟已触发，提交自动任务")
+        AppLogStore.add(
+            if (activityOpened) "旧版定时闹钟已打开自动签到界面"
+            else "旧版定时闹钟无法打开自动签到界面"
+        )
     }
 
     fun scheduleNextAfterRun(context: Context) {
@@ -87,7 +85,7 @@ object SchedulePlanner {
     ) {
         val request = OneTimeWorkRequestBuilder<CheckInWorker>()
             .setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
-            .setInputData(workerData("work_fallback"))
+            .setInputData(workerData(ScheduledRunLauncher.SOURCE_WORK_FALLBACK))
             .build()
 
         WorkManager.getInstance(context).enqueueUniqueWork(
@@ -104,7 +102,7 @@ object SchedulePlanner {
     private fun scheduleAlarm(context: Context, delayMillis: Long) {
         val alarmManager = context.getSystemService(AlarmManager::class.java)
         val triggerAtMillis = System.currentTimeMillis() + delayMillis
-        val pendingIntent = alarmPendingIntent(context)
+        val pendingIntent = ScheduledRunLauncher.alarmPendingIntent(context)
         if (canScheduleExactAlarms(context)) {
             val exactScheduled = runCatching {
                 alarmManager.setExactAndAllowWhileIdle(
@@ -123,18 +121,21 @@ object SchedulePlanner {
     }
 
     private fun cancelAlarm(context: Context) {
-        context.getSystemService(AlarmManager::class.java).cancel(alarmPendingIntent(context))
+        context.getSystemService(AlarmManager::class.java)
+            .cancel(ScheduledRunLauncher.alarmPendingIntent(context))
     }
 
-    private fun alarmPendingIntent(context: Context): PendingIntent {
+    private fun cancelLegacyAlarm(context: Context) {
         val intent = Intent(context, ScheduleReceiver::class.java)
             .setAction(AppConstants.DAILY_ALARM_ACTION)
-        return PendingIntent.getBroadcast(
+        val pendingIntent = PendingIntent.getBroadcast(
             context,
             AppConstants.DAILY_ALARM_REQUEST_CODE,
             intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        ) ?: return
+        context.getSystemService(AlarmManager::class.java).cancel(pendingIntent)
+        pendingIntent.cancel()
     }
 
     fun nextDelayMillis(hour: Int, minute: Int, now: Calendar = Calendar.getInstance()): Long {

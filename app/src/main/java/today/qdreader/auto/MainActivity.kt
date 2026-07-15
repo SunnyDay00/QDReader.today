@@ -1,6 +1,9 @@
 package today.qdreader.auto
 
+import android.app.KeyguardManager
+import android.content.Intent
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -62,9 +65,14 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import today.qdreader.auto.accessibility.AccessibilityBridgeImpl
 import today.qdreader.auto.automation.AutomationForegroundService
 import today.qdreader.auto.automation.AutomationRunState
+import today.qdreader.auto.core.AppConstants
 import today.qdreader.auto.core.AutomationTrigger
 import today.qdreader.auto.core.DeviceStatus
 import today.qdreader.auto.logs.AppLogEntry
@@ -73,6 +81,7 @@ import today.qdreader.auto.notifications.AppNotifier
 import today.qdreader.auto.schedule.ScheduleConfig
 import today.qdreader.auto.schedule.SchedulePlanner
 import today.qdreader.auto.schedule.ScheduleRepository
+import today.qdreader.auto.schedule.ScheduledRunLauncher
 import today.qdreader.auto.ui.theme.QDReaderTheme
 
 data class DashboardState(
@@ -87,12 +96,18 @@ data class DashboardState(
 
 class MainActivity : ComponentActivity() {
     private lateinit var scheduleRepository: ScheduleRepository
+    private var pendingScheduledRunSource: String? = null
+    private var scheduledRunDispatchJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (intent?.action == AppConstants.SCHEDULED_RUN_ACTION) {
+            prepareScheduledRunWindow()
+        }
         scheduleRepository = ScheduleRepository(this)
         AppNotifier.ensureChannel(this)
         AutomationForegroundService.keepAlive(this)
+        consumeScheduledRunIntent(intent)
 
         setContent {
             QDReaderTheme {
@@ -155,6 +170,86 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.action == AppConstants.SCHEDULED_RUN_ACTION) {
+            prepareScheduledRunWindow()
+        }
+        consumeScheduledRunIntent(intent)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            dispatchScheduledRunAfterForegroundConfirmed()
+        }
+    }
+
+    private fun prepareScheduledRunWindow() {
+        setShowWhenLocked(true)
+        setTurnScreenOn(true)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        getSystemService(KeyguardManager::class.java)
+            ?.takeIf { it.isKeyguardLocked }
+            ?.let { keyguardManager ->
+                runCatching { keyguardManager.requestDismissKeyguard(this, null) }
+            }
+    }
+
+    private fun consumeScheduledRunIntent(intent: Intent?) {
+        if (intent?.action != AppConstants.SCHEDULED_RUN_ACTION) return
+        pendingScheduledRunSource = intent.getStringExtra(AppConstants.SCHEDULED_RUN_SOURCE_EXTRA)
+            ?: ScheduledRunLauncher.SOURCE_ALARM
+        intent.action = null
+        AppLogStore.add("定时任务已打开自动签到界面，等待窗口进入前台")
+        dispatchScheduledRunAfterForegroundConfirmed()
+    }
+
+    private fun dispatchScheduledRunAfterForegroundConfirmed() {
+        val source = pendingScheduledRunSource ?: return
+        if (!hasWindowFocus() || scheduledRunDispatchJob?.isActive == true) return
+
+        scheduledRunDispatchJob = lifecycleScope.launch {
+            try {
+                delay(SCHEDULED_WINDOW_SETTLE_DELAY_MILLIS)
+                if (!hasWindowFocus()) return@launch
+
+                val config = scheduleRepository.load()
+                if (!config.enabled) {
+                    AppLogStore.add("定时任务已关闭，忽略本次前台启动请求")
+                    pendingScheduledRunSource = null
+                    SchedulePlanner.reschedule(this@MainActivity)
+                    return@launch
+                }
+
+                AppLogStore.add("定时任务已确认自动签到界面位于前台，来源：$source")
+                SchedulePlanner.reschedule(this@MainActivity)
+                val dispatched = AutomationForegroundService.requestRun(
+                    this@MainActivity,
+                    AutomationTrigger.Scheduled,
+                    config.maxRestartCount
+                )
+                if (dispatched) {
+                    pendingScheduledRunSource = null
+                } else {
+                    AppLogStore.add("自动签到界面已在前台，但任务提交到前台服务失败")
+                    AppNotifier.showStatus(
+                        this@MainActivity,
+                        "起点自动签到定时任务未启动",
+                        "自动签到界面已打开，但无法连接常驻服务"
+                    )
+                }
+            } finally {
+                scheduledRunDispatchJob = null
+            }
+        }
+    }
+
+    companion object {
+        private const val SCHEDULED_WINDOW_SETTLE_DELAY_MILLIS = 750L
     }
 }
 
