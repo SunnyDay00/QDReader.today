@@ -10,11 +10,25 @@ import today.qdreader.auto.MainActivity
 import today.qdreader.auto.core.AppConstants
 
 object ScheduledRunLauncher {
-    fun alarmPendingIntent(context: Context): PendingIntent = activityPendingIntent(
-        context = context,
-        source = SOURCE_ALARM,
-        requestCode = AppConstants.DAILY_ALARM_REQUEST_CODE
-    )
+    fun alarmPendingIntent(context: Context): PendingIntent {
+        val intent = Intent(context, ScheduleReceiver::class.java)
+            .setAction(AppConstants.SCHEDULED_ALARM_ACTION)
+        return PendingIntent.getBroadcast(
+            context,
+            AppConstants.SCHEDULED_ALARM_REQUEST_CODE,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    fun legacyActivityAlarmPendingIntent(context: Context): PendingIntent? {
+        return PendingIntent.getActivity(
+            context,
+            AppConstants.DAILY_ALARM_REQUEST_CODE,
+            scheduledRunIntent(context, SOURCE_ALARM),
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
 
     fun openActivity(context: Context, source: String): Boolean = runCatching {
         val pendingIntent = activityPendingIntent(
@@ -42,7 +56,17 @@ object ScheduledRunLauncher {
         source: String,
         requestCode: Int
     ): PendingIntent {
-        val intent = Intent(context, MainActivity::class.java)
+        return PendingIntent.getActivity(
+            context,
+            requestCode,
+            scheduledRunIntent(context, source),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            creatorActivityOptions()
+        )
+    }
+
+    private fun scheduledRunIntent(context: Context, source: String): Intent {
+        return Intent(context, MainActivity::class.java)
             .setAction(AppConstants.SCHEDULED_RUN_ACTION)
             .putExtra(AppConstants.SCHEDULED_RUN_SOURCE_EXTRA, source)
             .addFlags(
@@ -50,13 +74,6 @@ object ScheduledRunLauncher {
                     Intent.FLAG_ACTIVITY_CLEAR_TOP or
                     Intent.FLAG_ACTIVITY_SINGLE_TOP
             )
-        return PendingIntent.getActivity(
-            context,
-            requestCode,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            creatorActivityOptions()
-        )
     }
 
     private fun senderActivityOptions(): Bundle {

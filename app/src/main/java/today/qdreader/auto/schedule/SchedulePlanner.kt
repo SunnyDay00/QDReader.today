@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
 
 object SchedulePlanner {
     fun reschedule(context: Context) {
-        cancelLegacyAlarm(context)
+        cancelObsoleteAlarms(context)
         val repository = ScheduleRepository(context)
         val config = repository.load()
         val workManager = WorkManager.getInstance(context)
@@ -41,7 +41,7 @@ object SchedulePlanner {
         )
     }
 
-    fun triggerFromLegacyAlarm(context: Context) {
+    fun triggerFromAlarm(context: Context, source: String) {
         val config = ScheduleRepository(context).load()
         if (!config.enabled) {
             cancelAlarm(context)
@@ -52,11 +52,11 @@ object SchedulePlanner {
         reschedule(context)
         val activityOpened = ScheduledRunLauncher.openActivity(
             context,
-            ScheduledRunLauncher.SOURCE_LEGACY_ALARM
+            source
         )
         AppLogStore.add(
-            if (activityOpened) "旧版定时闹钟已打开自动签到界面"
-            else "旧版定时闹钟无法打开自动签到界面"
+            if (activityOpened) "定时闹钟已请求将自动签到界面切换到前台"
+            else "定时闹钟无法请求打开自动签到界面"
         )
     }
 
@@ -125,7 +125,13 @@ object SchedulePlanner {
             .cancel(ScheduledRunLauncher.alarmPendingIntent(context))
     }
 
-    private fun cancelLegacyAlarm(context: Context) {
+    private fun cancelObsoleteAlarms(context: Context) {
+        val alarmManager = context.getSystemService(AlarmManager::class.java)
+        ScheduledRunLauncher.legacyActivityAlarmPendingIntent(context)?.let { pendingIntent ->
+            alarmManager.cancel(pendingIntent)
+            pendingIntent.cancel()
+        }
+
         val intent = Intent(context, ScheduleReceiver::class.java)
             .setAction(AppConstants.DAILY_ALARM_ACTION)
         val pendingIntent = PendingIntent.getBroadcast(
@@ -134,7 +140,7 @@ object SchedulePlanner {
             intent,
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
         ) ?: return
-        context.getSystemService(AlarmManager::class.java).cancel(pendingIntent)
+        alarmManager.cancel(pendingIntent)
         pendingIntent.cancel()
     }
 

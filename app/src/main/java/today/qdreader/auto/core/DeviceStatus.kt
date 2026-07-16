@@ -14,6 +14,16 @@ import androidx.core.content.ContextCompat
 import today.qdreader.auto.accessibility.QidianAccessibilityService
 
 object DeviceStatus {
+    fun isXiaomiDevice(): Boolean {
+        return sequenceOf(Build.MANUFACTURER, Build.BRAND)
+            .filterNotNull()
+            .any { value ->
+                value.contains("xiaomi", ignoreCase = true) ||
+                    value.contains("redmi", ignoreCase = true) ||
+                    value.contains("poco", ignoreCase = true)
+            }
+    }
+
     fun isAccessibilityEnabled(context: Context): Boolean {
         val expected = ComponentName(context, QidianAccessibilityService::class.java).flattenToString()
         val enabledServices = Settings.Secure.getString(
@@ -73,6 +83,26 @@ object DeviceStatus {
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 )
             }
+    }
+
+    fun openXiaomiPermissionSettings(context: Context) {
+        val permissionEditorActivities = listOf(
+            "com.miui.permcenter.permissions.PermissionsEditorActivity",
+            "com.miui.permcenter.permissions.AppPermissionsEditorActivity"
+        )
+        permissionEditorActivities.forEach { activityName ->
+            val intent = Intent("miui.intent.action.APP_PERM_EDITOR")
+                .setClassName("com.miui.securitycenter", activityName)
+                .putExtra("extra_pkgname", context.packageName)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (runCatching { context.startActivity(intent) }.isSuccess) return
+        }
+
+        context.startActivity(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                .setData(Uri.parse("package:${context.packageName}"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 
     fun openTargetApp(context: Context, clearTask: Boolean = false): Boolean {

@@ -11,6 +11,8 @@ object AppConstants {
     const val UNIQUE_DAILY_WORK = "daily_qidian_checkin"
     const val DAILY_ALARM_ACTION = "today.qdreader.auto.action.DAILY_ALARM"
     const val DAILY_ALARM_REQUEST_CODE = 2001
+    const val SCHEDULED_ALARM_ACTION = "today.qdreader.auto.action.SCHEDULED_ALARM"
+    const val SCHEDULED_ALARM_REQUEST_CODE = 2003
     const val SCHEDULED_RUN_ACTION = "today.qdreader.auto.action.SCHEDULED_RUN"
     const val SCHEDULED_RUN_SOURCE_EXTRA = "scheduled_run_source"
     const val SCHEDULED_ACTIVITY_REQUEST_CODE = 2002

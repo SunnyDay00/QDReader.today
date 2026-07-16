@@ -90,6 +90,7 @@ data class DashboardState(
     val targetInstalled: Boolean,
     val serviceConnected: Boolean,
     val exactAlarmAllowed: Boolean,
+    val xiaomiDevice: Boolean,
     val currentPackageName: String?,
     val scheduleConfig: ScheduleConfig
 )
@@ -163,6 +164,9 @@ class MainActivity : ComponentActivity() {
                     },
                     onOpenNotificationSettings = {
                         DeviceStatus.openNotificationSettings(activity)
+                    },
+                    onOpenXiaomiPermissionSettings = {
+                        DeviceStatus.openXiaomiPermissionSettings(activity)
                     },
                     onClearLogs = {
                         AppLogStore.clear()
@@ -264,6 +268,7 @@ private fun loadDashboardState(
         targetInstalled = DeviceStatus.isTargetAppInstalled(context),
         serviceConnected = bridge.isServiceConnected(),
         exactAlarmAllowed = DeviceStatus.canScheduleExactAlarms(context),
+        xiaomiDevice = DeviceStatus.isXiaomiDevice(),
         currentPackageName = bridge.currentPackageName(),
         scheduleConfig = scheduleRepository.load()
     )
@@ -283,6 +288,7 @@ private fun DashboardScreen(
     onOpenExactAlarmSettings: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
     onOpenNotificationSettings: () -> Unit,
+    onOpenXiaomiPermissionSettings: () -> Unit,
     onClearLogs: () -> Unit
 ) {
     Scaffold(
@@ -325,7 +331,9 @@ private fun DashboardScreen(
                     onRunAutomation = onRunAutomation,
                     onStopAutomation = onStopAutomation,
                     onSaveSchedule = onSaveSchedule,
-                    onOpenExactAlarmSettings = onOpenExactAlarmSettings
+                    onOpenExactAlarmSettings = onOpenExactAlarmSettings,
+                    xiaomiDevice = state.xiaomiDevice,
+                    onOpenXiaomiPermissionSettings = onOpenXiaomiPermissionSettings
                 )
             }
             item { LogsPanel(logs = logs, onClearLogs = onClearLogs) }
@@ -502,7 +510,9 @@ private fun AutomationPanel(
     onRunAutomation: () -> Unit,
     onStopAutomation: () -> Unit,
     onSaveSchedule: (ScheduleConfig) -> Unit,
-    onOpenExactAlarmSettings: () -> Unit
+    onOpenExactAlarmSettings: () -> Unit,
+    xiaomiDevice: Boolean,
+    onOpenXiaomiPermissionSettings: () -> Unit
 ) {
     var enabled by remember(config) { mutableStateOf(config.enabled) }
     var hourText by remember(config) { mutableStateOf("%02d".format(config.hour)) }
@@ -562,6 +572,33 @@ private fun AutomationPanel(
                     shape = RoundedCornerShape(8.dp)
                 ) {
                     Text("授权")
+                }
+            }
+        }
+
+        if (enabled && xiaomiDevice) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFFFFF5F5))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "小米/Redmi 定时任务必须将“后台弹出界面”设为“允许”",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = DarkRed
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                OutlinedButton(
+                    onClick = onOpenXiaomiPermissionSettings,
+                    modifier = Modifier.height(36.dp),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("打开设置")
                 }
             }
         }
