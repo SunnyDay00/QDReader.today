@@ -105,12 +105,12 @@ class QidianPartialCheckInFlow(
 
         AppLogStore.add("步骤 5：组件已确认福利中心，命中“本周收益”和“积分商城”")
 
-        AppLogStore.add("步骤 6：确认三个福利任务是否都已显示，缺少任务时才上滑")
+        AppLogStore.add("步骤 6：确认四个福利任务是否都已显示，缺少任务时才上滑")
         if (!ensureWelfareTasksVisible(welfareCenter, bridge, executor)) {
-            return restartableFailure("福利中心连续查找后，三个广告奖励任务仍未全部显示")
+            return restartableFailure("福利中心连续查找后，四个广告奖励任务仍未全部显示")
         }
 
-        AppLogStore.add("步骤 7-13：开始按组件处理广告奖励任务")
+        AppLogStore.add("步骤 7：开始按组件依次处理四个广告奖励任务")
         var successfulTaskCount = 0
         for (task in WELFARE_AD_TASKS) {
             val taskResult = completeWelfareAdTask(task, bridge, executor)
@@ -304,9 +304,9 @@ class QidianPartialCheckInFlow(
             val missingTasks = tree.missingVisibleWelfareTasks()
             if (missingTasks.isEmpty()) {
                 if (swipeCount == 0) {
-                    AppLogStore.add("三个福利任务及状态按钮均已显示，跳过上滑")
+                    AppLogStore.add("四个福利任务及状态按钮均已显示，跳过上滑")
                 } else {
-                    AppLogStore.add("上滑 $swipeCount 次后三个福利任务及状态按钮已全部显示")
+                    AppLogStore.add("上滑 $swipeCount 次后四个福利任务及状态按钮已全部显示")
                 }
                 return true
             }
@@ -383,6 +383,11 @@ class QidianPartialCheckInFlow(
                 action.actionText in TASK_DONE_TEXTS -> {
                     AppLogStore.add("福利任务“${task.title}”已领取")
                     return FlowExecutionResult(true, "福利任务“${task.title}”已领取")
+                }
+
+                task.shouldSkipAction(action.actionText) -> {
+                    AppLogStore.add("福利任务“${task.title}”处于恢复时间：${action.actionText}，本轮不点击")
+                    return FlowExecutionResult(true, "福利任务“${task.title}”处于恢复时间，本轮已跳过")
                 }
 
                 action.actionText == GO_COMPLETE_TEXT -> {
@@ -819,6 +824,10 @@ class QidianPartialCheckInFlow(
                 row.flatten().firstOrNull { node ->
                     node.visibleToUser && node.isTextViewWithText(statusText)
                 }
+            } ?: row.flatten().firstOrNull { node ->
+                node.visibleToUser &&
+                    node.className == TEXT_VIEW_CLASS_NAME &&
+                    task.shouldSkipAction(node.text.orEmpty())
             }
         } else {
             findNearestTaskAction(task)
@@ -851,7 +860,7 @@ class QidianPartialCheckInFlow(
         return root.flatten()
             .filter { node ->
                 node.visibleToUser &&
-                    TASK_STATUS_TEXTS.any { statusText -> node.isTextViewWithText(statusText) }
+                    node.isTaskActionText(task)
             }
             .filter { node -> node.bounds.left >= titleNode.bounds.exactCenterX() }
             .filter { node ->
@@ -903,6 +912,16 @@ class QidianPartialCheckInFlow(
         return className == TEXT_VIEW_CLASS_NAME && text == expectedText
     }
 
+    private fun UiNodeSnapshot.isTaskActionText(task: WelfareAdTask): Boolean {
+        if (className != TEXT_VIEW_CLASS_NAME) return false
+        val actionText = text ?: return false
+        return actionText in TASK_STATUS_TEXTS || task.shouldSkipAction(actionText)
+    }
+
+    private fun WelfareAdTask.shouldSkipAction(actionText: String): Boolean {
+        return skipActionPrefixes.any { prefix -> actionText.startsWith(prefix) }
+    }
+
     private fun String?.matchesWebViewId(expectedId: String): Boolean {
         return this == expectedId || this?.endsWith(":id/$expectedId") == true
     }
@@ -915,10 +934,13 @@ class QidianPartialCheckInFlow(
         private const val INCENTIVE_TASK_TEXT = "激励任务"
         private const val THREE_AD_TASK_TEXT = "完成3个广告任务得奖励"
         private const val ONE_AD_TASK_TEXT = "完成1个广告任务得奖励"
+        private const val SURPRISE_WELFARE_TASK_TEXT = "做任务领惊喜福利"
         private const val THREE_AD_TASK_ROW_ID = "task_row_T2024010101"
         private const val ONE_AD_TASK_ROW_ID = "task_row_T2024010102"
+        private const val SURPRISE_WELFARE_TASK_ROW_ID = "task_row_T2025111701"
         private const val GO_COMPLETE_TEXT = "去完成"
         private const val CLAIMED_TEXT = "已领取"
+        private const val COOLDOWN_TEXT_PREFIX = "剩"
         private const val KNOW_TEXT = "知道了"
         private const val REWARD_TITLE_PREFIX = "恭喜获得"
         private const val WELFARE_WEEKLY_EARNINGS_TEXT = "本周收益"
@@ -987,6 +1009,11 @@ class QidianPartialCheckInFlow(
             WelfareAdTask(
                 title = ONE_AD_TASK_TEXT,
                 rowViewId = ONE_AD_TASK_ROW_ID
+            ),
+            WelfareAdTask(
+                title = SURPRISE_WELFARE_TASK_TEXT,
+                rowViewId = SURPRISE_WELFARE_TASK_ROW_ID,
+                skipActionPrefixes = listOf(COOLDOWN_TEXT_PREFIX)
             )
         )
         private const val TASK_STATUS_POLL_ATTEMPTS = 4
@@ -1001,7 +1028,8 @@ private data class OcrScreen(
 
 private data class WelfareAdTask(
     val title: String,
-    val rowViewId: String?
+    val rowViewId: String?,
+    val skipActionPrefixes: List<String> = emptyList()
 )
 
 private data class TaskComponentMatch(
